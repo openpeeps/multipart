@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/openpeeps/multipart/blob/main/.github/logo.png" width="90px"><br>
+  <img src="https://github.com/openpeeps/multipart/blob/main/.github/logo.png" width="140px"><br>
   A simple, fault tolerant multipart parser 👑 Written in Nim language
 </p>
 
@@ -15,13 +15,12 @@
 ## 😍 Key Features
 - [x] Framework agnostic
 - [x] On-the-Fly Content validation via Callbacks
-- [x] Fault tolerant. Skips invalid boundaries
 
 ## Examples
 todo. See `/tests`
 
 ### Need a input validator?
-If you're looking for a full input validator you can use `openpeeps/bag` package to validate input data, forms,
+If you're looking for a full featured input validator you can use `openpeeps/bag` package to validate input data, forms,
 including `multipart/form-data`. Give a try https://github.com/openpeeps/bag
 
 ### ❤ Contributions & Support
