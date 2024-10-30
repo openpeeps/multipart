@@ -13,8 +13,7 @@
 </p>
 
 ## 😍 Key Features
-- [x] Framework agnostic
-- [x] On-the-Fly Content validation via Callbacks
+todo
 
 ## Examples
 todo. See `/tests`
@@ -22,6 +21,10 @@ todo. See `/tests`
 ### Need a input validator?
 If you're looking for a full featured input validator you can use `openpeeps/bag` package to validate input data, forms,
 including `multipart/form-data`. Give a try https://github.com/openpeeps/bag
+
+### TODO
+Replace `streams` with io
+add examples
 
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/multipart/issues)
