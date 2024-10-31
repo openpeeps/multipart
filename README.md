@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://github.com/openpeeps/multipart/blob/main/.github/logo.png" width="140px"><br>
-  A simple, fault tolerant multipart parser 👑 Written in Nim language
+  A simple multipart parser 👑 Written in Nim language
 </p>
 
 <p align="center">
