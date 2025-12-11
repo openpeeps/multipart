@@ -5,8 +5,6 @@ author        = "George Lemon"
 description   = "A simple multipart parser"
 license       = "MIT"
 srcDir        = "src"
-# bin           = @["multipart"]
-# binDir        = "bin"
 
 # Dependencies
 

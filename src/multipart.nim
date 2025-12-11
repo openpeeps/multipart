@@ -1,12 +1,12 @@
-# A simple, framework agnostic parser for
-# handling multipart/form-data content-type in Nim
+# A simple multipart parser for handling
+# multipart/form-data content-type in Nim
 #
-# (c) 2024 George Lemon | MIT License
+# (c) 2025 George Lemon | MIT License
 #          Made by Humans from OpenPeeps
 #          https://github.com/supranim/multipart
 
 import std/[os, streams, strutils,
-  parseutils, options, oids, sequtils]
+            parseutils, options, oids, sequtils]
 
 import pkg/checksums/md5
 
@@ -252,6 +252,7 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
   var
     body = newStringStream(body)
     skipUntilNextBoundary: bool
+    currBoundary: ptr Boundary
     curr: char
   while not atEnd(body):
     if skipUntilNextBoundary:
@@ -261,15 +262,20 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
       skipUntilNextBoundary = false
     else:
       curr = body.readChar()
+    
+    # main parsing logic
     case curr
     of Newlines:
-      if prevStreamBoundary.isSome:
+      # check if next chars are the end of boundary
+      if body.peekStr(2) == "--" and body.peekStr(4 + boundary.len).endsWith(boundary & "--"):
+        break # end of multipart data
+      elif prevStreamBoundary.isSome:
         write(prevStreamBoundary.get[].fileContent, curr)
         runFileCallback(prevStreamBoundary.get)
     of '-':
       parseBoundary()
     else:
-      let currBoundary: ptr Boundary = addr(mp.boundaries[^1])
+      currBoundary = addr(mp.boundaries[^1])
       if currBoundary != nil:
         case currBoundary[].dataType
         of MultipartFile:
@@ -280,6 +286,7 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
   if prevStreamBoundary.isSome:
     prevStreamBoundary.get[].fileContent.close()
   body.close()
+  
 
 proc getTempDir*(mp: Multipart): string =
   ## Returns the temporary directory path
@@ -294,7 +301,9 @@ proc getPath*(boundary: Boundary): string =
 proc getMagicNumbers*(boundary: Boundary): seq[byte] =
   ## Returns the magic numbers collected while parsing the `boundary`
 
-proc len*(mp: Multipart): int = mp.boundaries.len
+proc len*(mp: Multipart): int =
+  ## Returns the number of valid boundaries
+  mp.boundaries.len
 
 iterator items*(mp: Multipart): Boundary =
   ## Iterate over available boundaries in
