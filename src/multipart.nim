@@ -71,8 +71,8 @@ type
       ## A `MultipartFileCallback` that runs while in
       ## `MultipartFile` boundary 
     fileSignatureCallback*: ptr MultipartFileCallbackSignature
-      ## Collects magic numbers that required for verifying
-      ## the file type. The callback must return one of 
+      ## Collects magic numbers while writing a file to disk
+      ## The callback must return one of 
       ## `MultipartFileSigantureState` states. Use `stateMoreMagic`
       ## to run `fileSignatureCallback` again for colelcting more bytes.
       ## 
@@ -80,7 +80,7 @@ type
       ## to stop the callback and continue writing the file.
       ## 
       ## `stateInvalidMagic` will mark the boundary as invalid,
-      ## skip it to `invalidBoundaries` and stops the callback.
+      ## skip to `invalidBoundaries` and stops the callback.
       ## 
       ## `stateValidMagic` will continue writing the file on disk
       ## and stops the signature callback
@@ -92,9 +92,10 @@ type
   MultipartInvalidHeader* = object of CatchableError
 
 proc parseHeader(line: string): MultipartHeaderTuple =
+  # Parse a multipart header line into a MultipartHeaderTuple
   result.value = @[]
-  var key: string
   var i = 0
+  var key: string
   i = line.parseUntil(key, ':')
   inc(i) # skip :
   result.key = parseEnum[MultipartHeader](key.toLowerAscii)
@@ -114,6 +115,7 @@ proc parseHeader(line: string): MultipartHeaderTuple =
       inc(i)
 
 template skipWhitespaces =
+  # Skip whitespace characters
   while true:
     case curr
     of Whitespace:
@@ -121,6 +123,7 @@ template skipWhitespaces =
     else: break
 
 template skipNewlines = 
+  # Skip newline characters
   while true:
     case curr
     of '\r', '\n':
