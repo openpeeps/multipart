@@ -12,22 +12,25 @@ import pkg/checksums/md5
 
 type
   MultipartHeader* = enum
+    ## Supported multipart headers
     contentDisposition = "content-disposition"
     contentType = "content-type"
   
   MultipartDataType* = enum
+    ## Types of multipart data
     MultipartFile
     MultipartText
 
   MultipartFileSigantureState* = enum
+    ## States for file magic-number signature validation
     stateInvalidMagic
     stateMoreMagic
     stateValidMagic
 
   MultipartHeaderTuple* = tuple[key: MultipartHeader, value: seq[(string, string)]]
+    ## A tuple representing a multipart header
 
-  MultipartFileCallback* =
-    proc(boundary: ptr Boundary, pos: int, c: ptr char): bool {.closure.}
+  MultipartFileCallback* = proc(boundary: ptr Boundary, pos: int, c: ptr char): bool {.closure.}
     ## A callback that runs while parsing a `MultipartFile` boundary
   
   MultipartFileCallbackSignature* = proc(boundary: ptr Boundary, pos: int, c: ptr char): MultipartFileSigantureState {.closure.}
@@ -35,10 +38,12 @@ type
     ## while writing the temporary file
 
   MultipartTextCallback* = proc(boundary: ptr Boundary, data: ptr string): bool {.closure.}
-    ## A callback that returns data of a `MultipartText`.
-    ## 
-    ## This callback can be used for on-the-fly validation of
-    ## string-based data from input fields
+    # A callback that returns data of a `MultipartText`.
+    # 
+    # This callback can be used for on-the-fly validation of
+    # string-based data from input fields
+    #
+    # not sure if needed though
 
   # BoundaryEndCallback* = proc(boundary: Boundary): bool {.nimcall.}
   # A callback that runs after parsing a boundary
@@ -57,6 +62,9 @@ type
     of MultipartFile:
       fileId*, fileName*, fileType*, filePath*: string
       fileContent*: File
+      # signature tracking for file magic-number validation
+      signatureState*: MultipartFileSigantureState
+      magicNumbers*: seq[byte]
     else:
       value*: string
 
@@ -67,10 +75,10 @@ type
     boundaryLine: string
       # Holds the boundary line retrieved from a
       # `Content-type` header
-    fileCallback*: ptr MultipartFileCallback
+    fileCallback*: MultipartFileCallback
       ## A `MultipartFileCallback` that runs while in
       ## `MultipartFile` boundary 
-    fileSignatureCallback*: ptr MultipartFileCallbackSignature
+    fileSignatureCallback*: MultipartFileCallbackSignature
       ## Collects magic numbers while writing a file to disk
       ## The callback must return one of 
       ## `MultipartFileSigantureState` states. Use `stateMoreMagic`
@@ -135,12 +143,32 @@ const
   contentTypeLen = len($contentType)
 
 template runFileCallback(someBoundary) {.dirty.} =
-  if mp.fileCallback != nil:
-    if mp.fileCallback[](someBoundary,
-      someBoundary.fileContent.getFilePos(), curr.addr):
-        discard
+  # First, run file-signature callback (if provided) to collect/validate magic bytes.
+  if mp.fileSignatureCallback != nil and someBoundary.signatureState != stateValidMagic:
+    let sigState = mp.fileSignatureCallback(someBoundary, someBoundary.magicNumbers.len, curr.addr)
+    case sigState
+    of stateMoreMagic:
+      # collect this byte for future introspection
+      someBoundary.magicNumbers.add(byte(ord(curr)))
+      someBoundary.signatureState = stateMoreMagic
+    of stateValidMagic:
+      someBoundary.magicNumbers.add(byte(ord(curr)))
+      someBoundary.signatureState = stateValidMagic
+    of stateInvalidMagic:
+      # invalid signature: close and mark as removed, move to invalidBoundaries
+      someBoundary.fileContent.close()
+      someBoundary.state = boundaryRemoved
+      add mp.invalidBoundaries, someBoundary[]
+      skipUntilNextBoundary = true
+      break
+
+  # if signature is valid (or no signature callback), run normal file callback if present.
+  if mp.fileCallback != nil and someBoundary.signatureState != stateInvalidMagic:
+    if mp.fileCallback(someBoundary, someBoundary.fileContent.getFilePos(), curr.addr):
+      discard
     else:
       someBoundary.fileContent.close()
+      someBoundary.state = boundaryRemoved
       skipUntilNextBoundary = true
       break
 
@@ -200,7 +228,10 @@ template parseBoundary {.dirty.} =
               fileName: headers[0].value[1][1],
               fileType: headers[1].value[0][0],
               filePath: filepath,
-              fileContent: open(filepath, fmWrite)
+              fileContent: open(filepath, fmWrite),
+              # initialize signature tracking so callbacks can run as bytes are written
+              signatureState: MultipartFileSigantureState.stateMoreMagic,
+              magicNumbers: @[]
             )
           prevStreamBoundary = some(mp.boundaries[^1].addr)
           write(prevStreamBoundary.get[].fileContent, curr)
@@ -229,13 +260,13 @@ template parseBoundary {.dirty.} =
 # Public API
 #
 proc initMultipart*(contentType: string,
-    fileCallback: ptr MultipartFileCallback = nil,
+    fileCallback: MultipartFileCallback = nil,
     tmpDir = ""
 ): Multipart =
   ## Initializes an instance of `Multipart`
   result.tmpDirectory =
     if tmpDir.len > 0: tmpDir
-    else: getTempDir() / getMD5(getAppDir())
+    else: getTempDir() / getMD5(getAppDir()) # todo replace md5 with sha
   result.boundaryLine = contentType
   if fileCallback != nil:
     result.fileCallback = fileCallback
@@ -289,20 +320,20 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
   if prevStreamBoundary.isSome:
     prevStreamBoundary.get[].fileContent.close()
   body.close()
-  
 
-proc getTempDir*(mp: Multipart): string =
+proc getTempDir*(mp: Multipart): lent string =
   ## Returns the temporary directory path
   mp.tmpDirectory
 
-proc getPath*(boundary: Boundary): string =
+proc getPath*(boundary: Boundary): lent string =
   ## Return the file path of a `Boundary` object
   ## if the boundary data type is `MultipartDataType`
   ## Check type using `getType`
   result = boundary.filePath
 
-proc getMagicNumbers*(boundary: Boundary): seq[byte] =
+proc getMagicNumbers*(boundary: Boundary): lent seq[byte] =
   ## Returns the magic numbers collected while parsing the `boundary`
+  result = boundary.magicNumbers
 
 proc len*(mp: Multipart): int =
   ## Returns the number of valid boundaries
