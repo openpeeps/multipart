@@ -16,6 +16,7 @@ No jokes"""
 test "can parse":
   let
     profilePicture = readFile("tests/assets/cs-black-000.png")
+    profilePicSize = getFileSize("tests/assets/cs-black-000.png")
     header = "multipart/form-data; boundary=----WebKitFormBoundaryYAAP9BVpMwSByNYb"
     prefixRaw = """
 ------WebKitFormBoundaryYAAP9BVpMwSByNYb
@@ -99,8 +100,9 @@ Content-Type: image/png
       
       # check file exists at temp path
       assert fileExists(b.getPath)
-      # if  b.fieldName == "profile_picture":
-        # assert readFile(b.getPath).len == profilePicture.len
+      if  b.fieldName == "profile_picture":
+        assert profilePicSize == getFileSize(b.getPath)
+        assert readFile(b.getPath).len == profilePicture.len
       echo "Name: $1=\"$2\"\nPath: $3" % [b.fieldName, b.fileName, b.getPath]
     else:
       echo "Name: $1=\"$2\"" % [b.fieldName, b.value]

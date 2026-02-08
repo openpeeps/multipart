@@ -300,12 +300,30 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
     # main parsing logic
     case curr
     of Newlines:
-      # check if next chars are the end of boundary
-      if body.peekStr(2) == "--" and body.peekStr(4 + boundary.len).endsWith(boundary & "--"):
-        break # end of multipart data
-      elif prevStreamBoundary.isSome:
-        write(prevStreamBoundary.get[].fileContent, curr)
-        runFileCallback(prevStreamBoundary.get)
+      # # check if next chars are the end of boundary
+      # if body.peekStr(2) == "--" and body.peekStr(4 + boundary.len).endsWith(boundary & "--"):
+      #   break # end of multipart data
+      # elif prevStreamBoundary.isSome:
+      #   write(prevStreamBoundary.get[].fileContent, curr)
+      #   runFileCallback(prevStreamBoundary.get)
+      # avoid writing any newline character(s) that immediately precede a boundary.
+      # build a lookahead that includes the current newline plus a chunk ahead,
+      # then skip any newline run and test if the remainder starts with "--<boundary>".
+      let maxLook = 4 + boundary.len
+      let seq = curr & body.peekStr(maxLook)
+      var idx = 0
+      while idx < seq.len and seq[idx] in Newlines:
+        inc idx
+      let rem = if idx < seq.len: seq.substr(idx) else: ""
+      if rem.startsWith("--" & boundary & "--"):
+        break
+      elif rem.startsWith("--" & boundary):
+        # skip writing the newline(s) that directly precede the boundary
+        continue
+      else:
+        if prevStreamBoundary.isSome:
+          write(prevStreamBoundary.get[].fileContent, curr)
+          runFileCallback(prevStreamBoundary.get)
     of '-':
       parseBoundary()
     else:
