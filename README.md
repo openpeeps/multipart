@@ -12,6 +12,14 @@
   <img src="https://github.com/openpeeps/multipart/workflows/test/badge.svg" alt="Github Actions">  <img src="https://github.com/openpeeps/multipart/workflows/docs/badge.svg" alt="Github Actions">
 </p>
 
+## Features
+- Parses multipart/form-data content from HTTP requests
+- Supports file uploads and text fields
+- Progress callbacks for monitoring parsing progress (body start/done, file start/chunk/done)
+- Configurable size limits for files and overall body
+- Callbacks for handling file data during parsing (magic number validation, custom processing)
+- Automatic cleanup of temporary files after processing
+
 ## Examples
 ```nim
 import multipart
