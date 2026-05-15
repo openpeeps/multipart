@@ -5,12 +5,43 @@
 #          Made by Humans from OpenPeeps
 #          https://github.com/supranim/multipart
 
-import std/[os, streams, strutils,
-            parseutils, options, oids, sequtils]
+## This module implements a simple multipart/form-data parser for Nim.
+## 
+## It allows you to parse multipart form data from HTTP requests, handling both file uploads and text fields.
+## The parser processes the multipart content, extracts file data and text fields, and provides a structured
+## representation of the parsed data through the `Multipart` type.
+## 
+## The parser also supports callbacks for handling file data as it's being parsed, which can be useful for on-the-fly
+## validation or processing of uploaded files.
+## 
+## Features:
+## - Parses multipart/form-data content from HTTP requests
+## - Supports file uploads and text fields
+## - Progress callbacks for monitoring parsing progress (body start/done, file start/chunk/done)
+## - Configurable size limits for files and overall body
+## - Callbacks for handling file data during parsing (magic number validation, custom processing)
+## - Automatic cleanup of temporary files after processing
+
+import std/[os, streams, strutils, asyncdispatch,
+            parseutils, options, oids, sequtils, macros]
 
 import pkg/checksums/md5
 
 type
+  MultipartProgressKind* = enum
+    progressBodyStart   ## fired once before parsing begins
+    progressFileStart   ## fired when a new file boundary opens
+    progressFileChunk   ## fired for every byte written to a file
+    progressFileDone    ## fired when a file boundary closes
+    progressBodyDone    ## fired once after parsing completes
+
+  MultipartProgress* = object
+    kind*: MultipartProgressKind
+    fieldName*: string   ## which field this event belongs to
+    fileName*: string    ## empty for text fields / body events
+    bytesWritten*: int64 ## running total for the current file
+    totalBytes*: int64   ## body size (set on progressBodyStart/Done)
+
   MultipartHeader* = enum
     ## Supported multipart headers
     contentDisposition = "content-disposition"
@@ -33,17 +64,33 @@ type
   MultipartFileCallback* = proc(boundary: ptr Boundary, pos: int, c: ptr char): bool {.closure.}
     ## A callback that runs while parsing a `MultipartFile` boundary
   
+  MultipartProgressCallback* = proc(evt: MultipartProgress) {.closure.}
+    ## sync variant — for non-async callers, fired every `progressChunkInterval` bytes
+
+  MultipartAsyncProgressCallback* = proc(evt: MultipartProgress): Future[void] {.closure.}
+    ## async variant — for async callers (WebSocket, SSE etc.)
+
   MultipartFileCallbackSignature* = proc(boundary: ptr Boundary, pos: int, c: ptr char): MultipartFileSigantureState {.closure.}
-    ## A callback to collect magic numbers signature
-    ## while writing the temporary file
+    ## A callback that runs while parsing a `MultipartFile` boundary to collect and validate magic
 
   MultipartTextCallback* = proc(boundary: ptr Boundary, data: ptr string): bool {.closure.}
     # A callback that returns data of a `MultipartText`.
     # 
     # This callback can be used for on-the-fly validation of
-    # string-based data from input fields
-    #
-    # not sure if needed though
+    # string-based data from input fields, and can determine whether the
+    # boundary should be marked as invalid and skipped
+
+  MultipartSizeLimitError* = object of CatchableError
+    ## Raised when a size limit is exceeded
+
+  MultipartSizeLimit* = object
+    ## Configurable size limits for multipart parsing
+    maxFileSize*: int64
+      ## Maximum size for a single file upload in bytes (0 = unlimited)
+    maxBodySize*: int64
+      ## Maximum total body size in bytes (0 = unlimited)
+    maxFieldSize*: int64
+      ## Maximum size for a single text field value in bytes (0 = unlimited)
 
   # BoundaryEndCallback* = proc(boundary: Boundary): bool {.nimcall.}
   # A callback that runs after parsing a boundary
@@ -62,6 +109,7 @@ type
     of MultipartFile:
       fileId*, fileName*, fileType*, filePath*: string
       fileContent*: File
+      fileSize*: int64
       # signature tracking for file magic-number validation
       signatureState*: MultipartFileSigantureState
       magicNumbers*: seq[byte]
@@ -92,12 +140,58 @@ type
       ## 
       ## `stateValidMagic` will continue writing the file on disk
       ## and stops the signature callback
+    progressCallback*: MultipartProgressCallback
+      ## An optional `MultipartProgressCallback` that fires inline during parsing.
+      ## Called for every progress event
+    asyncProgressCallback*: MultipartAsyncProgressCallback
+      ## An optional `MultipartAsyncProgressCallback` that fires inline during parsing.
+      ## Use this when you need to push progress events to an async stream (WebSocket, SSE)
+      ## without blocking the event loop.
+    progressChunkInterval*: int64
+      ## How often (in bytes) to fire progressFileChunk.
+      ## Default is every 64KB, set to 0 to emit every byte (not recommended)
     boundaries: seq[Boundary]
       # A sequence of Boundary objects
     invalidBoundaries*: seq[Boundary]
       # A sequence of removed boundaries
+    totalBytesRead: int64
+      # Total bytes read from the multipart body, used for enforcing `maxBodySize`
+    bodySize: int64
+      # Total size of the multipart body, set at the start of parsing
+      # for progress reporting
+    sizeLimit*: MultipartSizeLimit
+      # Configurable size limits for multipart parsing
+
+  MultipartRef* = ref Multipart
+    ## Ref-counted wrapper for `Multipart`. Required for `parseAsync`
+    ## since the async macro captures `mp` into a closure state machine
+    ## and `var` params cannot be captured.
 
   MultipartInvalidHeader* = object of CatchableError
+
+  StrReader = object
+    data: string
+    pos:  int
+
+proc readChar(r: var StrReader): char {.inline.} =
+  result = r.data[r.pos]
+  inc r.pos
+
+proc atEnd(r: StrReader): bool {.inline.} =
+  r.pos >= r.data.len
+
+proc peekStr(r: StrReader, n: int): string {.inline.} =
+  let stop = min(r.pos + n, r.data.len)
+  r.data[r.pos ..< stop]
+
+proc readStr(r: var StrReader, n: int): string {.inline.} =
+  let stop = min(r.pos + n, r.data.len)
+  result = r.data[r.pos ..< stop]
+  r.pos = stop
+
+proc close(r: var StrReader) {.inline.} =
+  # no resources to free, but we can clear the data for security
+  reset(r.data)
 
 proc parseHeader(line: string): MultipartHeaderTuple =
   # Parse a multipart header line into a MultipartHeaderTuple
@@ -122,7 +216,7 @@ proc parseHeader(line: string): MultipartHeaderTuple =
         add result.value, (kv[0], kv[1].unescape)
       inc(i)
 
-template skipWhitespaces =
+template skipWhitespaces {.dirty.} =
   # Skip whitespace characters
   while true:
     case curr
@@ -130,7 +224,7 @@ template skipWhitespaces =
       curr = body.readChar()
     else: break
 
-template skipNewlines = 
+template skipNewlines {.dirty.} = 
   # Skip newline characters
   while true:
     case curr
@@ -142,8 +236,42 @@ const
   contentDispositionLen = len($contentDisposition)
   contentTypeLen = len($contentType)
 
-template runFileCallback(someBoundary) {.dirty.} =
-  # First, run file-signature callback (if provided) to collect/validate magic bytes.
+template sendProgress(mp: var Multipart, evt: MultipartProgress) =
+  # when set, this callback is fired inline during parsing to report progress events
+  if mp.progressCallback != nil:
+    mp.progressCallback(evt)
+
+template sendProgressAsync(mp: MultipartRef, evt: MultipartProgress) =
+  if mp.asyncProgressCallback != nil:
+    await mp.asyncProgressCallback(evt)
+
+template checkFileSizeLimit(someBoundary) {.dirty.} =
+  if mp.sizeLimit.maxFileSize > 0 and
+      someBoundary[].fileSize > mp.sizeLimit.maxFileSize:
+    someBoundary[].fileContent.close()
+    removeFile(someBoundary[].filePath)
+    someBoundary[].state = boundaryRemoved
+    add mp.invalidBoundaries, someBoundary[]
+    skipUntilNextBoundary = true
+    raise newException(MultipartSizeLimitError,
+      "File '" & someBoundary[].fileName & "' exceeds the maximum allowed size of " &
+      $mp.sizeLimit.maxFileSize & " bytes")
+
+template runFileCallback(progressSendTemplate, someBoundary) {.dirty.} =
+  inc someBoundary[].fileSize   # track file size
+  checkFileSizeLimit(someBoundary)
+
+  # Emit per-chunk progress only when the interval condition is met
+  if mp.progressChunkInterval <= 0 or (someBoundary[].fileSize mod mp.progressChunkInterval == 0):
+    progressSendTemplate(mp, MultipartProgress(
+      kind:         progressFileChunk,
+      fieldName:    someBoundary[].fieldName,
+      fileName:     someBoundary[].fileName,
+      bytesWritten: someBoundary[].fileSize,
+      totalBytes:   mp.bodySize
+    ))
+
+  # run file-signature callback (if provided) to collect/validate magic bytes.
   if mp.fileSignatureCallback != nil and someBoundary.signatureState != stateValidMagic:
     let sigState = mp.fileSignatureCallback(someBoundary, someBoundary.magicNumbers.len, curr.addr)
     case sigState
@@ -169,10 +297,11 @@ template runFileCallback(someBoundary) {.dirty.} =
     else:
       someBoundary.fileContent.close()
       someBoundary.state = boundaryRemoved
+      add mp.invalidBoundaries, someBoundary[]
       skipUntilNextBoundary = true
       break
 
-template parseBoundary {.dirty.} =
+template parseBoundary(progressSendTemplate) {.dirty.} =
   var currBoundary: string
   add currBoundary, curr
   curr = body.readChar()
@@ -215,8 +344,18 @@ template parseBoundary {.dirty.} =
           else: break
         skipNewlines()
         if prevStreamBoundary.isSome:
+          # close previous file boundary and run callback one last time with final file size
+          progressSendTemplate(mp, MultipartProgress(
+            kind:         progressFileDone,
+            fieldName:    prevStreamBoundary.get[].fieldName,
+            fileName:     prevStreamBoundary.get[].fileName,
+            bytesWritten: prevStreamBoundary.get[].fileSize
+          ))
           prevStreamBoundary.get[].fileContent.close()
           prevStreamBoundary = none(ptr Boundary)
+        
+        # this is a file boundary — create a new Boundary with file metadata, open a
+        # temp file for writing, and add it to the boundaries sequence
         if headers.len == 2:
           let fileId = $genOid()
           let filepath = mp.tmpDirectory / fileId
@@ -234,16 +373,25 @@ template parseBoundary {.dirty.} =
               magicNumbers: @[]
             )
           prevStreamBoundary = some(mp.boundaries[^1].addr)
+          progressSendTemplate(mp, MultipartProgress(
+            kind:      progressFileStart,
+            fieldName: prevStreamBoundary.get[].fieldName,
+            fileName:  prevStreamBoundary.get[].fileName
+          ))
           write(prevStreamBoundary.get[].fileContent, curr)
-          runFileCallback(prevStreamBoundary.get)
+          runFileCallback(progressSendTemplate, prevStreamBoundary.get)
+        
+        # this is a text field boundary — create a new Boundary with the field
+        # name and an empty value, and add it to the boundaries sequence
         elif headers.len == 1:
           var inputBoundary =
             Boundary(
               dataType: MultipartText,
               fieldName: headers[0].value[0][1]
             )
-          add inputBoundary.value, curr
+          # add inputBoundary.value, curr
           add mp.boundaries, inputBoundary
+          dec body.pos
       setLen(currBoundary, 0)
     else:
       if prevStreamBoundary.isSome:
@@ -259,20 +407,69 @@ template parseBoundary {.dirty.} =
 #
 # Public API
 #
+proc cleanup*(mp: var Multipart|MultipartRef) =
+  ## Removes all temporary files written to disk during parsing.
+  ## Call this after you are done processing the boundaries.
+  for b in mp.boundaries:
+    if b.dataType == MultipartFile and b.filePath.len > 0:
+      try: removeFile(b.filePath)
+      except OSError: discard
+  for b in mp.invalidBoundaries:
+    if b.dataType == MultipartFile and b.filePath.len > 0:
+      try: removeFile(b.filePath)
+      except OSError: discard
+
+proc cleanupInvalid*(mp: var Multipart|MultipartRef) =
+  ## Removes only the temporary files for boundaries
+  ## that were rejected (invalid signature / callback rejection).
+  for b in mp.invalidBoundaries:
+    if b.dataType == MultipartFile and b.filePath.len > 0:
+      try: removeFile(b.filePath)
+      except OSError: discard
+
 proc initMultipart*(contentType: string,
     fileCallback: MultipartFileCallback = nil,
-    tmpDir = ""
-): Multipart =
+    progressCallback: MultipartProgressCallback = nil,
+    sizeLimit = MultipartSizeLimit(),
+    tmpDir = ""): Multipart =
   ## Initializes an instance of `Multipart`
   result.tmpDirectory =
     if tmpDir.len > 0: tmpDir
     else: getTempDir() / getMD5(getAppDir()) # todo replace md5 with sha
   result.boundaryLine = contentType
-  if fileCallback != nil:
-    result.fileCallback = fileCallback
+  result.fileCallback = fileCallback
+  result.progressCallback = progressCallback
 
-proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
-  ## Parse and return a `Multipart` instance
+proc initMultipartRef*(contentType: string,
+    fileCallback: MultipartFileCallback = nil,
+    progressCallback: MultipartProgressCallback = nil,
+    sizeLimit = MultipartSizeLimit(),
+    tmpDir = ""
+): MultipartRef =
+  ## Ref variant of `initMultipart`. Use when you need `parseAsync`.
+  new(result)
+  result[] = initMultipart(contentType,
+    fileCallback = fileCallback,
+    progressCallback = progressCallback,
+    sizeLimit = sizeLimit,
+    tmpDir = tmpDir)
+  
+  # running the progress on every byte can be a performance bottleneck for large files,
+  # so we provide a configurable interval (default 64KB) for firing `progressFileChunk` events
+  result[].progressChunkInterval = 64 * 1024
+
+template parseImpl(progressSendTemplate: untyped) {.dirty.} =
+  mp.bodySize = body.len.int64
+  if mp.sizeLimit.maxBodySize > 0 and mp.bodySize > mp.sizeLimit.maxBodySize:
+    raise newException(MultipartSizeLimitError,
+      "Request body (" & $body.len & " bytes) exceeds the maximum allowed size of " &
+      $mp.sizeLimit.maxBodySize & " bytes")
+
+  progressSendTemplate(mp, MultipartProgress(
+    kind:       progressBodyStart,
+    totalBytes: mp.bodySize
+  ))
+
   var
     i = 0
     prevStreamBoundary: Option[ptr Boundary]
@@ -284,7 +481,7 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
   let boundary = multipartBoundary.split("boundary=")[1]
   discard existsOrCreateDir(mp.tmpDirectory)
   var
-    body = newStringStream(body)
+    body = StrReader(data: body, pos: 0)
     skipUntilNextBoundary: bool
     currBoundary: ptr Boundary
     curr: char
@@ -292,23 +489,12 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
     if skipUntilNextBoundary:
       while curr != '-' and (body.atEnd == false):
         curr = body.readChar()
-      parseBoundary()
+      parseBoundary(progressSendTemplate)
       skipUntilNextBoundary = false
     else:
       curr = body.readChar()
-    
-    # main parsing logic
     case curr
     of Newlines:
-      # # check if next chars are the end of boundary
-      # if body.peekStr(2) == "--" and body.peekStr(4 + boundary.len).endsWith(boundary & "--"):
-      #   break # end of multipart data
-      # elif prevStreamBoundary.isSome:
-      #   write(prevStreamBoundary.get[].fileContent, curr)
-      #   runFileCallback(prevStreamBoundary.get)
-      # avoid writing any newline character(s) that immediately precede a boundary.
-      # build a lookahead that includes the current newline plus a chunk ahead,
-      # then skip any newline run and test if the remainder starts with "--<boundary>".
       let maxLook = 4 + boundary.len
       let seq = curr & body.peekStr(maxLook)
       var idx = 0
@@ -318,28 +504,59 @@ proc parse*(mp: var Multipart, body: sink string, tmpDir = "") =
       if rem.startsWith("--" & boundary & "--"):
         break
       elif rem.startsWith("--" & boundary):
-        # skip writing the newline(s) that directly precede the boundary
         continue
       else:
         if prevStreamBoundary.isSome:
           write(prevStreamBoundary.get[].fileContent, curr)
-          runFileCallback(prevStreamBoundary.get)
+          runFileCallback(progressSendTemplate, prevStreamBoundary.get)
     of '-':
-      parseBoundary()
+      parseBoundary(progressSendTemplate)
     else:
       currBoundary = addr(mp.boundaries[^1])
       if currBoundary != nil:
         case currBoundary[].dataType
         of MultipartFile:
           write(currBoundary[].fileContent, curr)
-          runFileCallback(currBoundary)
+          runFileCallback(progressSendTemplate, currBoundary)
         of MultipartText:
           add currBoundary[].value, curr
+
   if prevStreamBoundary.isSome:
+    progressSendTemplate(mp, MultipartProgress(
+      kind:         progressFileDone,
+      fieldName:    prevStreamBoundary.get[].fieldName,
+      fileName:     prevStreamBoundary.get[].fileName,
+      bytesWritten: prevStreamBoundary.get[].fileSize
+    ))
     prevStreamBoundary.get[].fileContent.close()
   body.close()
+  progressSendTemplate(mp, MultipartProgress(
+    kind:       progressBodyDone,
+    totalBytes: mp.bodySize
+  ))
 
-proc getTempDir*(mp: Multipart): lent string =
+proc parse*(mp: var Multipart, body: string, tmpDir = "") =
+  ## Parse and return a `Multipart` instance synchronously from a multipart/form-data body string.
+  ## 
+  ## Raises `MultipartSizeLimitError` if any of the specified size limits are exceeded
+  ## during parsing.
+  parseImpl(sendProgress)
+
+proc parseAsync*(mp: MultipartRef, body: string, tmpDir = "") {.async.} =
+  ## Async variant of `parse`. Use when you need to push progress to
+  ## a WebSocket or SSE stream without blocking the event loop.
+  ## 
+  ## Example:
+  ## ```nim
+  ## mp.asyncProgressCallback = proc(evt: MultipartProgress): Future[void] {.async.} =
+  ##   await ws.send($evt)   # push to WebSocket
+  ## 
+  ## mp.progressChunkInterval = 64 * 1024  # emit every 64KB, not every byte
+  ## await mp.parseAsync(body)
+  ## ```
+  parseImpl(sendProgressAsync)
+
+proc getTempDir*(mp: Multipart|MultipartRef): lent string =
   ## Returns the temporary directory path
   mp.tmpDirectory
 
@@ -353,11 +570,11 @@ proc getMagicNumbers*(boundary: Boundary): lent seq[byte] =
   ## Returns the magic numbers collected while parsing the `boundary`
   result = boundary.magicNumbers
 
-proc len*(mp: Multipart): int =
+proc len*(mp: Multipart|MultipartRef): int =
   ## Returns the number of valid boundaries
   mp.boundaries.len
 
-iterator items*(mp: Multipart): Boundary =
+iterator items*(mp: Multipart|MultipartRef): Boundary =
   ## Iterate over available boundaries in
   ## the `Multipart` instance
   for b in mp.boundaries:
