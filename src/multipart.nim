@@ -173,24 +173,50 @@ type
     data: string
     pos:  int
 
+  ByteReader = object
+    data: seq[byte]
+    pos:  int
+
 proc readChar(r: var StrReader): char {.inline.} =
   result = r.data[r.pos]
   inc r.pos
 
+proc readChar(r: var ByteReader): char {.inline.} =
+  result = char(r.data[r.pos])
+  inc r.pos
+
 proc atEnd(r: StrReader): bool {.inline.} =
+  r.pos >= r.data.len
+
+proc atEnd(r: ByteReader): bool {.inline.} =
   r.pos >= r.data.len
 
 proc peekStr(r: StrReader, n: int): string {.inline.} =
   let stop = min(r.pos + n, r.data.len)
   r.data[r.pos ..< stop]
 
+proc peekStr(r: ByteReader, n: int): string {.inline.} =
+  let stop = min(r.pos + n, r.data.len)
+  result = newString(stop - r.pos)
+  if result.len > 0:
+    copyMem(addr result[0], addr r.data[r.pos], result.len)
+
 proc readStr(r: var StrReader, n: int): string {.inline.} =
   let stop = min(r.pos + n, r.data.len)
   result = r.data[r.pos ..< stop]
   r.pos = stop
 
+proc readStr(r: var ByteReader, n: int): string {.inline.} =
+  let stop = min(r.pos + n, r.data.len)
+  result = newString(stop - r.pos)
+  if result.len > 0:
+    copyMem(addr result[0], addr r.data[r.pos], result.len)
+  r.pos = stop
+
 proc close(r: var StrReader) {.inline.} =
-  # no resources to free, but we can clear the data for security
+  reset(r.data)
+
+proc close(r: var ByteReader) {.inline.} =
   reset(r.data)
 
 proc parseHeader(line: string): MultipartHeaderTuple =
@@ -459,10 +485,10 @@ proc initMultipartRef*(contentType: string,
   result[].progressChunkInterval = 64 * 1024
 
 template parseImpl(progressSendTemplate: untyped) {.dirty.} =
-  mp.bodySize = body.len.int64
+  mp.bodySize = body.data.len.int64
   if mp.sizeLimit.maxBodySize > 0 and mp.bodySize > mp.sizeLimit.maxBodySize:
     raise newException(MultipartSizeLimitError,
-      "Request body (" & $body.len & " bytes) exceeds the maximum allowed size of " &
+      "Request body (" & $body.data.len & " bytes) exceeds the maximum allowed size of " &
       $mp.sizeLimit.maxBodySize & " bytes")
 
   progressSendTemplate(mp, MultipartProgress(
@@ -481,7 +507,6 @@ template parseImpl(progressSendTemplate: untyped) {.dirty.} =
   let boundary = multipartBoundary.split("boundary=")[1]
   discard existsOrCreateDir(mp.tmpDirectory)
   var
-    body = StrReader(data: body, pos: 0)
     skipUntilNextBoundary: bool
     currBoundary: ptr Boundary
     curr: char
@@ -540,6 +565,13 @@ proc parse*(mp: var Multipart, body: string, tmpDir = "") =
   ## 
   ## Raises `MultipartSizeLimitError` if any of the specified size limits are exceeded
   ## during parsing.
+  var body = StrReader(data: body, pos: 0)
+  parseImpl(sendProgress)
+
+proc parse*(mp: var Multipart, body: seq[byte], tmpDir = "") =
+  ## Parse a `Multipart` instance synchronously from a multipart/form-data body
+  ## provided as raw bytes. Avoids the overhead of converting from a string.
+  var body = ByteReader(data: body, pos: 0)
   parseImpl(sendProgress)
 
 proc parseAsync*(mp: MultipartRef, body: string, tmpDir = "") {.async.} =
@@ -554,6 +586,12 @@ proc parseAsync*(mp: MultipartRef, body: string, tmpDir = "") {.async.} =
   ## mp.progressChunkInterval = 64 * 1024  # emit every 64KB, not every byte
   ## await mp.parseAsync(body)
   ## ```
+  var body = StrReader(data: body, pos: 0)
+  parseImpl(sendProgressAsync)
+
+proc parseAsync*(mp: MultipartRef, body: seq[byte], tmpDir = "") {.async.} =
+  ## Async variant of `parse` for raw bytes input.
+  var body = ByteReader(data: body, pos: 0)
   parseImpl(sendProgressAsync)
 
 proc getTempDir*(mp: Multipart|MultipartRef): lent string =
