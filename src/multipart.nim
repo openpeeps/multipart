@@ -16,6 +16,8 @@
 ## 
 ## Features:
 ## - Parses multipart/form-data content from HTTP requests
+## - Supports both file uploads and text fields
+## - Supports either string or raw byte input for parsing (to avoid unnecessary conversions)
 ## - Supports file uploads and text fields
 ## - Progress callbacks for monitoring parsing progress (body start/done, file start/chunk/done)
 ## - Configurable size limits for files and overall body
