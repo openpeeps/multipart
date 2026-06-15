@@ -67,7 +67,6 @@ If you're looking for a full featured input validator you can use `openpeeps/bag
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/multipart/issues)
 - 👋 Wanna help? [Fork it!](https://github.com/openpeeps/multipart/fork)
-- 😎 [Get €20 in cloud credits from Hetzner](https://hetzner.cloud/?ref=Hm0mYGM9NxZ4)
 
 ### 🎩 License
 MIT license. [Made by Humans from OpenPeeps](https://github.com/openpeeps).<br>
