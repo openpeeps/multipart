@@ -13,16 +13,6 @@
 ## 
 ## The parser also supports callbacks for handling file data as it's being parsed, which can be useful for on-the-fly
 ## validation or processing of uploaded files.
-## 
-## Features:
-## - Parses multipart/form-data content from HTTP requests
-## - Supports both file uploads and text fields
-## - Supports either string or raw byte input for parsing (to avoid unnecessary conversions)
-## - Supports file uploads and text fields
-## - Progress callbacks for monitoring parsing progress (body start/done, file start/chunk/done)
-## - Configurable size limits for files and overall body
-## - Callbacks for handling file data during parsing (magic number validation, custom processing)
-## - Automatic cleanup of temporary files after processing
 
 import std/[os, streams, strutils, asyncdispatch,
             parseutils, options, oids, sequtils, macros]
@@ -163,6 +153,10 @@ type
       # for progress reporting
     sizeLimit*: MultipartSizeLimit
       # Configurable size limits for multipart parsing
+    fileWriteBuf: string
+      # Internal: buffer for batched file writes
+    fileWriteThreshold*: int
+      # Flush file write buffer when it exceeds this many bytes (default 65536)
 
   MultipartRef* = ref Multipart
     ## Ref-counted wrapper for `Multipart`. Required for `parseAsync`
@@ -178,6 +172,11 @@ type
   ByteReader = object
     data: seq[byte]
     pos:  int
+
+  ByteSliceReader = object
+    data: ptr UncheckedArray[byte]
+    len: int
+    pos: int
 
 proc readChar(r: var StrReader): char {.inline.} =
   result = r.data[r.pos]
@@ -220,6 +219,33 @@ proc close(r: var StrReader) {.inline.} =
 
 proc close(r: var ByteReader) {.inline.} =
   reset(r.data)
+
+proc readChar(r: var ByteSliceReader): char {.inline.} =
+  result = char(r.data[r.pos])
+  inc r.pos
+
+proc atEnd(r: ByteSliceReader): bool {.inline.} =
+  r.pos >= r.len
+
+proc peekStr(r: ByteSliceReader, n: int): string {.inline.} =
+  let stop = min(r.pos + n, r.len)
+  result = newString(stop - r.pos)
+  if result.len > 0:
+    copyMem(addr result[0], addr r.data[r.pos], result.len)
+
+proc readStr(r: var ByteSliceReader, n: int): string {.inline.} =
+  let stop = min(r.pos + n, r.len)
+  result = newString(stop - r.pos)
+  if result.len > 0:
+    copyMem(addr result[0], addr r.data[r.pos], result.len)
+  r.pos = stop
+
+proc close(r: var ByteSliceReader) {.inline.} =
+  discard
+
+proc dataLen(r: StrReader): int {.inline.} = r.data.len
+proc dataLen(r: ByteReader): int {.inline.} = r.data.len
+proc dataLen(r: ByteSliceReader): int {.inline.} = r.len
 
 proc parseHeader(line: string): MultipartHeaderTuple =
   # Parse a multipart header line into a MultipartHeaderTuple
@@ -276,6 +302,7 @@ template sendProgressAsync(mp: MultipartRef, evt: MultipartProgress) =
 template checkFileSizeLimit(someBoundary) {.dirty.} =
   if mp.sizeLimit.maxFileSize > 0 and
       someBoundary[].fileSize > mp.sizeLimit.maxFileSize:
+    flushWriteBuf(someBoundary)
     someBoundary[].fileContent.close()
     removeFile(someBoundary[].filePath)
     someBoundary[].state = boundaryRemoved
@@ -284,6 +311,11 @@ template checkFileSizeLimit(someBoundary) {.dirty.} =
     raise newException(MultipartSizeLimitError,
       "File '" & someBoundary[].fileName & "' exceeds the maximum allowed size of " &
       $mp.sizeLimit.maxFileSize & " bytes")
+
+template flushWriteBuf(someBoundary) {.dirty.} =
+  if mp.fileWriteBuf.len > 0:
+    write(someBoundary[].fileContent, mp.fileWriteBuf)
+    setLen(mp.fileWriteBuf, 0)
 
 template runFileCallback(progressSendTemplate, someBoundary) {.dirty.} =
   inc someBoundary[].fileSize   # track file size
@@ -312,6 +344,7 @@ template runFileCallback(progressSendTemplate, someBoundary) {.dirty.} =
       someBoundary.signatureState = stateValidMagic
     of stateInvalidMagic:
       # invalid signature: close and mark as removed, move to invalidBoundaries
+      flushWriteBuf(someBoundary)
       someBoundary.fileContent.close()
       someBoundary.state = boundaryRemoved
       add mp.invalidBoundaries, someBoundary[]
@@ -323,6 +356,7 @@ template runFileCallback(progressSendTemplate, someBoundary) {.dirty.} =
     if mp.fileCallback(someBoundary, someBoundary.fileContent.getFilePos(), curr.addr):
       discard
     else:
+      flushWriteBuf(someBoundary)
       someBoundary.fileContent.close()
       someBoundary.state = boundaryRemoved
       add mp.invalidBoundaries, someBoundary[]
@@ -373,6 +407,7 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
         skipNewlines()
         if prevStreamBoundary.isSome:
           # close previous file boundary and run callback one last time with final file size
+          flushWriteBuf(prevStreamBoundary.get)
           progressSendTemplate(mp, MultipartProgress(
             kind:         progressFileDone,
             fieldName:    prevStreamBoundary.get[].fieldName,
@@ -406,7 +441,7 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
             fieldName: prevStreamBoundary.get[].fieldName,
             fileName:  prevStreamBoundary.get[].fileName
           ))
-          write(prevStreamBoundary.get[].fileContent, curr)
+          mp.fileWriteBuf.add(curr)
           runFileCallback(progressSendTemplate, prevStreamBoundary.get)
         
         # this is a text field boundary — create a new Boundary with the field
@@ -423,13 +458,18 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
       setLen(currBoundary, 0)
     else:
       if prevStreamBoundary.isSome:
-        write(prevStreamBoundary.get[].fileContent, currBoundary)
+        mp.fileWriteBuf.add(currBoundary)
+        prevStreamBoundary.get[].fileSize += currBoundary.len.int64
+        if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
+          flushWriteBuf(prevStreamBoundary.get)
+          checkFileSizeLimit(prevStreamBoundary.get)
       else:
         add mp.boundaries[^1].value, currBoundary
       setLen(currBoundary, 0)
   else: discard
   if prevStreamBoundary.isSome:
-    write(prevStreamBoundary.get[].fileContent, currBoundary)
+    mp.fileWriteBuf.add(currBoundary)
+    prevStreamBoundary.get[].fileSize += currBoundary.len.int64
     setLen(currBoundary, 0)
 
 #
@@ -463,10 +503,11 @@ proc initMultipart*(contentType: string,
   ## Initializes an instance of `Multipart`
   result.tmpDirectory =
     if tmpDir.len > 0: tmpDir
-    else: getTempDir() / getMD5(getAppDir()) # todo replace md5 with sha
+    else: getTempDir() / getMD5(getAppDir())
   result.boundaryLine = contentType
   result.fileCallback = fileCallback
   result.progressCallback = progressCallback
+  result.fileWriteThreshold = 65536
 
 proc initMultipartRef*(contentType: string,
     fileCallback: MultipartFileCallback = nil,
@@ -487,10 +528,10 @@ proc initMultipartRef*(contentType: string,
   result[].progressChunkInterval = 64 * 1024
 
 template parseImpl(progressSendTemplate: untyped) {.dirty.} =
-  mp.bodySize = body.data.len.int64
+  mp.bodySize = body.dataLen().int64
   if mp.sizeLimit.maxBodySize > 0 and mp.bodySize > mp.sizeLimit.maxBodySize:
     raise newException(MultipartSizeLimitError,
-      "Request body (" & $body.data.len & " bytes) exceeds the maximum allowed size of " &
+      "Request body (" & $body.dataLen() & " bytes) exceeds the maximum allowed size of " &
       $mp.sizeLimit.maxBodySize & " bytes")
 
   progressSendTemplate(mp, MultipartProgress(
@@ -534,8 +575,10 @@ template parseImpl(progressSendTemplate: untyped) {.dirty.} =
         continue
       else:
         if prevStreamBoundary.isSome:
-          write(prevStreamBoundary.get[].fileContent, curr)
+          mp.fileWriteBuf.add(curr)
           runFileCallback(progressSendTemplate, prevStreamBoundary.get)
+          if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
+            flushWriteBuf(prevStreamBoundary.get)
     of '-':
       parseBoundary(progressSendTemplate)
     else:
@@ -543,12 +586,15 @@ template parseImpl(progressSendTemplate: untyped) {.dirty.} =
       if currBoundary != nil:
         case currBoundary[].dataType
         of MultipartFile:
-          write(currBoundary[].fileContent, curr)
+          mp.fileWriteBuf.add(curr)
           runFileCallback(progressSendTemplate, currBoundary)
+          if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
+            flushWriteBuf(currBoundary)
         of MultipartText:
           add currBoundary[].value, curr
 
   if prevStreamBoundary.isSome:
+    flushWriteBuf(prevStreamBoundary.get)
     progressSendTemplate(mp, MultipartProgress(
       kind:         progressFileDone,
       fieldName:    prevStreamBoundary.get[].fieldName,
@@ -596,6 +642,18 @@ proc parseAsync*(mp: MultipartRef, body: seq[byte], tmpDir = "") {.async.} =
   var body = ByteReader(data: body, pos: 0)
   parseImpl(sendProgressAsync)
 
+proc parse*(mp: var Multipart, data: ptr UncheckedArray[byte]; dataLen: int, tmpDir = "") =
+  ## Zero-copy parse from a raw byte pointer.
+  ## The pointer must remain valid for the duration of parsing
+  ## (e.g. points into the HTTP parser buffer during a request handler).
+  var body = ByteSliceReader(data: data, len: dataLen, pos: 0)
+  parseImpl(sendProgress)
+
+proc parseAsync*(mp: MultipartRef, data: ptr UncheckedArray[byte]; dataLen: int, tmpDir = "") {.async.} =
+  ## Async zero-copy variant of `parse` from a raw byte pointer.
+  var body = ByteSliceReader(data: data, len: dataLen, pos: 0)
+  parseImpl(sendProgressAsync)
+
 proc getTempDir*(mp: Multipart|MultipartRef): lent string =
   ## Returns the temporary directory path
   mp.tmpDirectory
@@ -619,3 +677,501 @@ iterator items*(mp: Multipart|MultipartRef): Boundary =
   ## the `Multipart` instance
   for b in mp.boundaries:
     yield b
+
+# ── Streaming multipart parser ────────────────────────────────────────────────
+#
+# MultipartStreamer processes multipart/form-data incrementally via feed() calls.
+# No need to buffer the entire body — works with onBodyData callbacks for
+# true socket→multipart→disk streaming with minimal RAM.
+#
+# State machine:
+#   sPreamble → match "--{boundary}" → sAfterBoundary → "\r\n" → sHeaders
+#   sHeaders → "\r\n\r\n" → sData → match "\r\n--{boundary}" → sAfterBoundary
+#   sAfterBoundary → "--" → sDone
+#
+# Boundary detection uses matchPos tracking against the boundary pattern.
+# Partial matches spanning feed() calls are buffered in `pending` (max ~64 bytes).
+
+type
+  StreamerPhase = enum
+    sPreamble       # Looking for first --boundary
+    sHeaders        # Accumulating headers until \r\n\r\n
+    sData           # Processing part data (file/text), scanning for \r\n--boundary
+    sAfterBoundary  # After --boundary, checking \r\n (new part) or -- (end)
+    sDone           # Parsing complete
+
+  MultipartStreamer* = object
+    ## Incremental multipart/form-data parser. Feed body data as it arrives
+    ## from the network. No need to buffer the entire body.
+    ##
+    ## Usage:
+    ##   var ms = newMultipartStreamer(contentType)
+    ##   ms.feed(chunk1)
+    ##   ms.feed(chunk2)
+    ##   ...
+    ##   if ms.isComplete():
+    ##     for b in ms.boundaries(): ...
+    ##     ms.cleanup()
+
+    boundary: string
+    dashBoundary: string       # "--{boundary}"
+    crlfDashBoundary: string   # "\r\n--{boundary}"
+    dashDashBoundary: string   # "--{boundary}--"
+
+    phase: StreamerPhase
+
+    # Boundary detection (sPreamble and sData)
+    matchPos: int              # Current position in boundary pattern match
+    pending: string            # Buffered bytes for potential boundary match
+    isFirstBoundary: bool      # true while looking for the first --boundary
+
+    # Header accumulation (sHeaders)
+    headerBuf: string          # Accumulated header bytes, ends at \r\n\r\n
+
+    # After-boundary checking (sAfterBoundary)
+    afterBuf: string           # 2-byte buffer: \r\n or --
+
+    # Current part tracking
+    currentBoundaryIdx: int    # Index into mp.boundaries for current part (-1 = none)
+    skipUntilNextBoundary: bool
+
+    # Embedded Multipart for config (callbacks, limits, tmp dir) and results
+    mp: Multipart
+
+  MultipartStreamerRef* = ref MultipartStreamer
+    ## Ref-counted wrapper for `MultipartStreamer`. Required when the
+    ## streamer must be captured in closures (e.g. onBodyData callbacks).
+
+proc newMultipartStreamer*(contentType: string,
+    fileCallback: MultipartFileCallback = nil,
+    fileSignatureCallback: MultipartFileCallbackSignature = nil,
+    progressCallback: MultipartProgressCallback = nil,
+    sizeLimit = MultipartSizeLimit(),
+    tmpDir = "";
+    bodySize = 0'i64): MultipartStreamer =
+  ## Create a new streaming multipart parser.
+  ## `contentType` is the full Content-Type header value
+  ## (e.g. "multipart/form-data; boundary=----WebKitFormBoundaryXYZ").
+  ## `bodySize` is the total body size if known (e.g. from Content-Length).
+  result.mp.tmpDirectory =
+    if tmpDir.len > 0: tmpDir
+    else: getTempDir() / getMD5(getAppDir())
+  result.mp.boundaryLine = contentType
+  result.mp.fileCallback = fileCallback
+  result.mp.fileSignatureCallback = fileSignatureCallback
+  result.mp.progressCallback = progressCallback
+  result.mp.sizeLimit = sizeLimit
+  result.mp.fileWriteThreshold = 65536
+  result.mp.progressChunkInterval = 64 * 1024
+  result.mp.bodySize = bodySize
+  result.phase = sPreamble
+  result.isFirstBoundary = true
+  result.currentBoundaryIdx = -1
+  result.matchPos = 0
+
+  # Extract boundary string from Content-Type
+  var i = 0
+  var multipartType: string
+  var multipartBoundary: string
+  i += contentType.parseUntil(multipartType, {';'}, i)
+  i += contentType.skipWhitespace(i)
+  i += contentType.parseUntil(multipartBoundary, {'\c', '\l'}, i)
+  result.boundary = multipartBoundary.split("boundary=")[1]
+  result.dashBoundary = "--" & result.boundary
+  result.crlfDashBoundary = "\r\n--" & result.boundary
+  result.dashDashBoundary = "--" & result.boundary & "--"
+
+  discard existsOrCreateDir(result.mp.tmpDirectory)
+
+proc newMultipartStreamerRef*(contentType: string,
+    fileCallback: MultipartFileCallback = nil,
+    fileSignatureCallback: MultipartFileCallbackSignature = nil,
+    progressCallback: MultipartProgressCallback = nil,
+    sizeLimit = MultipartSizeLimit(),
+    tmpDir = "";
+    bodySize = 0'i64): MultipartStreamerRef =
+  new(result)
+  result[] = newMultipartStreamer(contentType,
+    fileCallback = fileCallback,
+    fileSignatureCallback = fileSignatureCallback,
+    progressCallback = progressCallback,
+    sizeLimit = sizeLimit,
+    tmpDir = tmpDir,
+    bodySize = bodySize)
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+template streamerFlushWriteBuf(ms: var MultipartStreamer, bIdx: int) =
+  if ms.mp.fileWriteBuf.len > 0 and bIdx >= 0:
+    write(ms.mp.boundaries[bIdx].fileContent, ms.mp.fileWriteBuf)
+    setLen(ms.mp.fileWriteBuf, 0)
+
+template streamerCheckFileSizeLimit(ms: var MultipartStreamer, bIdx: int) =
+  if ms.mp.sizeLimit.maxFileSize > 0 and bIdx >= 0 and
+      ms.mp.boundaries[bIdx].fileSize > ms.mp.sizeLimit.maxFileSize:
+    streamerFlushWriteBuf(ms, bIdx)
+    ms.mp.boundaries[bIdx].fileContent.close()
+    removeFile(ms.mp.boundaries[bIdx].filePath)
+    ms.mp.boundaries[bIdx].state = boundaryRemoved
+    add ms.mp.invalidBoundaries, ms.mp.boundaries[bIdx]
+    ms.skipUntilNextBoundary = true
+    raise newException(MultipartSizeLimitError,
+      "File '" & ms.mp.boundaries[bIdx].fileName & "' exceeds the maximum allowed size of " &
+      $ms.mp.sizeLimit.maxFileSize & " bytes")
+
+template streamerSendProgress(ms: var MultipartStreamer, evt: MultipartProgress) =
+  if ms.mp.progressCallback != nil:
+    ms.mp.progressCallback(evt)
+
+proc closeCurrentFile(ms: var MultipartStreamer) =
+  if ms.currentBoundaryIdx >= 0 and
+      ms.mp.boundaries[ms.currentBoundaryIdx].dataType == MultipartFile:
+    streamerFlushWriteBuf(ms, ms.currentBoundaryIdx)
+    streamerSendProgress(ms, MultipartProgress(
+      kind:         progressFileDone,
+      fieldName:    ms.mp.boundaries[ms.currentBoundaryIdx].fieldName,
+      fileName:     ms.mp.boundaries[ms.currentBoundaryIdx].fileName,
+      bytesWritten: ms.mp.boundaries[ms.currentBoundaryIdx].fileSize
+    ))
+    ms.mp.boundaries[ms.currentBoundaryIdx].fileContent.close()
+    ms.currentBoundaryIdx = -1
+
+proc writeDataByte(ms: var MultipartStreamer, c: char) =
+  ## Write a data byte to the current boundary (file or text).
+  ## Handles callbacks, progress, and size limits.
+  if ms.skipUntilNextBoundary:
+    return
+  if ms.currentBoundaryIdx < 0:
+    return
+  let bIdx = ms.currentBoundaryIdx
+  case ms.mp.boundaries[bIdx].dataType
+  of MultipartFile:
+    ms.mp.fileWriteBuf.add(c)
+    inc ms.mp.boundaries[bIdx].fileSize
+    if ms.mp.fileWriteBuf.len >= ms.mp.fileWriteThreshold:
+      streamerFlushWriteBuf(ms, bIdx)
+      streamerCheckFileSizeLimit(ms, bIdx)
+    if ms.mp.progressChunkInterval <= 0 or
+        (ms.mp.boundaries[bIdx].fileSize mod ms.mp.progressChunkInterval == 0):
+      streamerSendProgress(ms, MultipartProgress(
+        kind:         progressFileChunk,
+        fieldName:    ms.mp.boundaries[bIdx].fieldName,
+        fileName:     ms.mp.boundaries[bIdx].fileName,
+        bytesWritten: ms.mp.boundaries[bIdx].fileSize,
+        totalBytes:   ms.mp.bodySize
+      ))
+    if ms.mp.fileSignatureCallback != nil and
+        ms.mp.boundaries[bIdx].signatureState != stateValidMagic:
+      var curr = c
+      let sigState = ms.mp.fileSignatureCallback(
+        addr ms.mp.boundaries[bIdx],
+        ms.mp.boundaries[bIdx].magicNumbers.len,
+        curr.addr)
+      case sigState
+      of stateMoreMagic:
+        ms.mp.boundaries[bIdx].magicNumbers.add(byte(ord(c)))
+        ms.mp.boundaries[bIdx].signatureState = stateMoreMagic
+      of stateValidMagic:
+        ms.mp.boundaries[bIdx].magicNumbers.add(byte(ord(c)))
+        ms.mp.boundaries[bIdx].signatureState = stateValidMagic
+      of stateInvalidMagic:
+        streamerFlushWriteBuf(ms, bIdx)
+        ms.mp.boundaries[bIdx].fileContent.close()
+        ms.mp.boundaries[bIdx].state = boundaryRemoved
+        add ms.mp.invalidBoundaries, ms.mp.boundaries[bIdx]
+        ms.skipUntilNextBoundary = true
+        ms.currentBoundaryIdx = -1
+        return
+    if ms.mp.fileCallback != nil and
+        ms.mp.boundaries[bIdx].signatureState != stateInvalidMagic:
+      var curr = c
+      if ms.mp.fileCallback(addr ms.mp.boundaries[bIdx],
+          ms.mp.boundaries[bIdx].fileContent.getFilePos(), curr.addr):
+        discard
+      else:
+        streamerFlushWriteBuf(ms, bIdx)
+        ms.mp.boundaries[bIdx].fileContent.close()
+        ms.mp.boundaries[bIdx].state = boundaryRemoved
+        add ms.mp.invalidBoundaries, ms.mp.boundaries[bIdx]
+        ms.skipUntilNextBoundary = true
+        ms.currentBoundaryIdx = -1
+        return
+  of MultipartText:
+    add ms.mp.boundaries[bIdx].value, c
+
+proc flushPendingAsData(ms: var MultipartStreamer) =
+  for c in ms.pending:
+    writeDataByte(ms, c)
+  setLen(ms.pending, 0)
+
+proc createPart(ms: var MultipartStreamer, headers: seq[MultipartHeaderTuple]) =
+  ## Create a new Boundary from parsed headers and add it to mp.boundaries.
+  if headers.len == 2:
+    let fileId = $genOid()
+    let filepath = ms.mp.tmpDirectory / fileId
+    add ms.mp.boundaries,
+      Boundary(
+        dataType: MultipartFile,
+        fileId: fileId,
+        fieldName: headers[0].value[0][1],
+        fileName: headers[0].value[1][1],
+        fileType: headers[1].value[0][0],
+        filePath: filepath,
+        fileContent: open(filepath, fmWrite),
+        signatureState: MultipartFileSigantureState.stateMoreMagic,
+        magicNumbers: @[]
+      )
+    ms.currentBoundaryIdx = ms.mp.boundaries.len - 1
+    streamerSendProgress(ms, MultipartProgress(
+      kind:      progressFileStart,
+      fieldName: ms.mp.boundaries[ms.currentBoundaryIdx].fieldName,
+      fileName:  ms.mp.boundaries[ms.currentBoundaryIdx].fileName
+    ))
+  elif headers.len == 1:
+    add ms.mp.boundaries,
+      Boundary(
+        dataType: MultipartText,
+        fieldName: headers[0].value[0][1]
+      )
+    ms.currentBoundaryIdx = ms.mp.boundaries.len - 1
+
+proc parseStreamerHeaders(headerBuf: string): seq[MultipartHeaderTuple] =
+  ## Parse multipart headers from an accumulated header buffer.
+  ## The buffer contains lines between the boundary and \r\n\r\n,
+  ## with the trailing \r\n\r\n already stripped by the caller.
+  var headers: seq[MultipartHeaderTuple]
+  for line in headerBuf.split("\r\n"):
+    if line.len == 0:
+      continue
+    # Also handle bare \n (no \r) just in case
+    for subline in line.split('\n'):
+      if subline.len == 0:
+        continue
+      let colonPos = subline.find(':')
+      if colonPos <= 0:
+        continue
+      let key = subline[0 ..< colonPos].toLowerAscii()
+      if key == $contentDisposition or key == $contentType:
+        headers.add(parseHeader(subline))
+  result = headers
+
+# ── feed() implementation ─────────────────────────────────────────────────────
+
+proc feedImpl(ms: var MultipartStreamer, data: ptr UncheckedArray[byte], dataLen: int) =
+  ## Core feed implementation. Processes data bytes through the state machine.
+  if ms.phase == sDone:
+    return
+
+  # Fire progressBodyStart on first feed
+  if ms.mp.totalBytesRead == 0 and dataLen > 0:
+    streamerSendProgress(ms, MultipartProgress(
+      kind:       progressBodyStart,
+      totalBytes: ms.mp.bodySize
+    ))
+
+  var pos = 0
+  while pos < dataLen and ms.phase != sDone:
+    let c = char(data[pos])
+    inc ms.mp.totalBytesRead
+
+    # Check body size limit
+    if ms.mp.sizeLimit.maxBodySize > 0 and
+        ms.mp.totalBytesRead > ms.mp.sizeLimit.maxBodySize:
+      raise newException(MultipartSizeLimitError,
+        "Request body exceeds the maximum allowed size of " &
+        $ms.mp.sizeLimit.maxBodySize & " bytes")
+
+    case ms.phase
+    of sPreamble:
+      # Looking for the first --boundary
+      # Match against dashBoundary = "--{boundary}"
+      if ms.matchPos == 0:
+        if c == ms.dashBoundary[0]:
+          ms.matchPos = 1
+          ms.pending.add(c)
+        # else: skip preamble byte
+      else:
+        if c == ms.dashBoundary[ms.matchPos]:
+          inc ms.matchPos
+          ms.pending.add(c)
+          if ms.matchPos == ms.dashBoundary.len:
+            # First boundary matched!
+            setLen(ms.pending, 0)
+            ms.matchPos = 0
+            ms.isFirstBoundary = false
+            ms.phase = sAfterBoundary
+        else:
+          # Mismatch — not a boundary, skip preamble bytes
+          setLen(ms.pending, 0)
+          ms.matchPos = 0
+          # Check if current byte starts a new match
+          if c == ms.dashBoundary[0]:
+            ms.matchPos = 1
+            ms.pending.add(c)
+      inc pos
+
+    of sHeaders:
+      # Accumulate header bytes until \r\n\r\n
+      ms.headerBuf.add(c)
+      let hlen = ms.headerBuf.len
+      if hlen >= 4 and
+          ms.headerBuf[hlen - 4] == '\r' and ms.headerBuf[hlen - 3] == '\n' and
+          ms.headerBuf[hlen - 2] == '\r' and ms.headerBuf[hlen - 1] == '\n':
+        # Headers complete — parse them and create a new part
+        let headers = parseStreamerHeaders(ms.headerBuf[0 ..< hlen - 4])
+        createPart(ms, headers)
+        setLen(ms.headerBuf, 0)
+        ms.phase = sData
+      inc pos
+
+    of sData:
+      # Process part data, scanning for \r\n--boundary
+      if ms.skipUntilNextBoundary:
+        # Just scan for boundary pattern, don't write data
+        if ms.matchPos == 0:
+          if c == ms.crlfDashBoundary[0]:  # '\r'
+            ms.matchPos = 1
+            ms.pending.add(c)
+        else:
+          if c == ms.crlfDashBoundary[ms.matchPos]:
+            inc ms.matchPos
+            ms.pending.add(c)
+            if ms.matchPos == ms.crlfDashBoundary.len:
+              setLen(ms.pending, 0)
+              ms.matchPos = 0
+              ms.skipUntilNextBoundary = false
+              closeCurrentFile(ms)
+              ms.phase = sAfterBoundary
+          else:
+            # Mismatch — not a boundary, but we're skipping anyway
+            setLen(ms.pending, 0)
+            ms.matchPos = 0
+            if c == ms.crlfDashBoundary[0]:
+              ms.matchPos = 1
+              ms.pending.add(c)
+        inc pos
+      else:
+        # Normal data processing
+        if ms.matchPos == 0:
+          if c == ms.crlfDashBoundary[0]:  # '\r'
+            ms.matchPos = 1
+            ms.pending.add(c)
+          else:
+            writeDataByte(ms, c)
+        else:
+          if c == ms.crlfDashBoundary[ms.matchPos]:
+            inc ms.matchPos
+            ms.pending.add(c)
+            if ms.matchPos == ms.crlfDashBoundary.len:
+              # Full boundary match!
+              # Close current file (if any) before transitioning
+              setLen(ms.pending, 0)
+              ms.matchPos = 0
+              closeCurrentFile(ms)
+              ms.phase = sAfterBoundary
+          else:
+            # Mismatch — buffered bytes are data, not a boundary
+            flushPendingAsData(ms)
+            ms.matchPos = 0
+            # Re-check current byte
+            if c == ms.crlfDashBoundary[0]:
+              ms.matchPos = 1
+              ms.pending.add(c)
+            else:
+              writeDataByte(ms, c)
+        inc pos
+
+    of sAfterBoundary:
+      # After matching --boundary, check next 2 bytes: \r\n or --
+      ms.afterBuf.add(c)
+      if ms.afterBuf.len == 2:
+        if ms.afterBuf == "\r\n":
+          # New part starting
+          setLen(ms.afterBuf, 0)
+          ms.phase = sHeaders
+        elif ms.afterBuf == "--":
+          # Closing boundary
+          setLen(ms.afterBuf, 0)
+          ms.phase = sDone
+          closeCurrentFile(ms)
+          streamerSendProgress(ms, MultipartProgress(
+            kind:       progressBodyDone,
+            totalBytes: ms.mp.bodySize
+          ))
+        else:
+          # Invalid per RFC — treat as data and resume sData
+          for ch in ms.afterBuf:
+            writeDataByte(ms, ch)
+          setLen(ms.afterBuf, 0)
+          ms.phase = sData
+      inc pos
+
+    of sDone:
+      break
+
+proc feed*(ms: var MultipartStreamer, data: openArray[byte]) =
+  ## Feed a chunk of multipart body data. Can be called incrementally
+  ## as data arrives from the network.
+  if data.len == 0: return
+  feedImpl(ms, cast[ptr UncheckedArray[byte]](unsafeAddr data[0]), data.len)
+
+proc feed*(ms: var MultipartStreamer, data: string) =
+  ## Convenience overload for feeding string data.
+  if data.len == 0: return
+  feedImpl(ms, cast[ptr UncheckedArray[byte]](data.cstring), data.len)
+
+proc feed*(ms: var MultipartStreamer, data: ptr UncheckedArray[byte]; dataLen: int) =
+  ## Zero-copy feed from a raw byte pointer.
+  if dataLen == 0: return
+  feedImpl(ms, data, dataLen)
+
+proc isComplete*(ms: MultipartStreamer): bool {.inline.} =
+  ## Returns true when the closing --boundary-- has been seen.
+  ms.phase == sDone
+
+proc boundaries*(ms: MultipartStreamer): lent seq[Boundary] =
+  ms.mp.boundaries
+
+proc invalidBoundaries*(ms: MultipartStreamer): lent seq[Boundary] =
+  ms.mp.invalidBoundaries
+
+iterator items*(ms: MultipartStreamer): Boundary =
+  for b in ms.mp.boundaries:
+    yield b
+
+proc cleanup*(ms: var MultipartStreamer) =
+  ## Remove all temporary files written to disk during streaming parsing.
+  ms.mp.cleanup()
+
+proc cleanupInvalid*(ms: var MultipartStreamer) =
+  ms.mp.cleanupInvalid()
+
+proc len*(ms: MultipartStreamer): int =
+  ms.mp.boundaries.len
+
+proc getTempDir*(ms: MultipartStreamer): lent string =
+  ms.mp.tmpDirectory
+
+# ── MultipartStreamerRef overloads ─────────────────────────────────────────────
+
+proc isComplete*(ms: MultipartStreamerRef): bool {.inline.} =
+  ms[].isComplete()
+
+proc boundaries*(ms: MultipartStreamerRef): lent seq[Boundary] =
+  ms[].boundaries()
+
+proc invalidBoundaries*(ms: MultipartStreamerRef): lent seq[Boundary] =
+  ms[].invalidBoundaries()
+
+iterator items*(ms: MultipartStreamerRef): Boundary =
+  for b in ms[].mp.boundaries:
+    yield b
+
+proc cleanup*(ms: MultipartStreamerRef) =
+  ms[].cleanup()
+
+proc cleanupInvalid*(ms: MultipartStreamerRef) =
+  ms[].cleanupInvalid()
+
+proc len*(ms: MultipartStreamerRef): int =
+  ms[].boundaries().len
