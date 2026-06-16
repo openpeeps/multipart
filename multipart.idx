@@ -1,45 +1,82 @@
 nimTitle	multipart	multipart.html	module multipart		0
-nim	progressBodyStart	multipart.html#progressBodyStart	MultipartProgressKind.progressBodyStart		31
-nim	progressFileStart	multipart.html#progressFileStart	MultipartProgressKind.progressFileStart		31
-nim	progressFileChunk	multipart.html#progressFileChunk	MultipartProgressKind.progressFileChunk		31
-nim	progressFileDone	multipart.html#progressFileDone	MultipartProgressKind.progressFileDone		31
-nim	progressBodyDone	multipart.html#progressBodyDone	MultipartProgressKind.progressBodyDone		31
-nim	MultipartProgressKind	multipart.html#MultipartProgressKind	enum MultipartProgressKind		31
-nim	MultipartProgress	multipart.html#MultipartProgress	object MultipartProgress		38
-nim	contentDisposition	multipart.html#contentDisposition	MultipartHeader.contentDisposition		45
-nim	contentType	multipart.html#contentType	MultipartHeader.contentType		45
-nim	MultipartHeader	multipart.html#MultipartHeader	enum MultipartHeader		45
-nim	MultipartFile	multipart.html#MultipartFile	MultipartDataType.MultipartFile		50
-nim	MultipartText	multipart.html#MultipartText	MultipartDataType.MultipartText		50
-nim	MultipartDataType	multipart.html#MultipartDataType	enum MultipartDataType		50
-nim	stateInvalidMagic	multipart.html#stateInvalidMagic	MultipartFileSigantureState.stateInvalidMagic		55
-nim	stateMoreMagic	multipart.html#stateMoreMagic	MultipartFileSigantureState.stateMoreMagic		55
-nim	stateValidMagic	multipart.html#stateValidMagic	MultipartFileSigantureState.stateValidMagic		55
-nim	MultipartFileSigantureState	multipart.html#MultipartFileSigantureState	enum MultipartFileSigantureState		55
-nim	MultipartHeaderTuple	multipart.html#MultipartHeaderTuple	tuple MultipartHeaderTuple		61
-nim	MultipartFileCallback	multipart.html#MultipartFileCallback	type MultipartFileCallback		64
-nim	MultipartProgressCallback	multipart.html#MultipartProgressCallback	type MultipartProgressCallback		67
-nim	MultipartAsyncProgressCallback	multipart.html#MultipartAsyncProgressCallback	type MultipartAsyncProgressCallback		70
-nim	MultipartFileCallbackSignature	multipart.html#MultipartFileCallbackSignature	type MultipartFileCallbackSignature		73
-nim	MultipartTextCallback	multipart.html#MultipartTextCallback	type MultipartTextCallback		76
-nim	MultipartSizeLimitError	multipart.html#MultipartSizeLimitError	object MultipartSizeLimitError		83
-nim	MultipartSizeLimit	multipart.html#MultipartSizeLimit	object MultipartSizeLimit		86
-nim	boundaryInit	multipart.html#boundaryInit	BoundaryState.boundaryInit		97
-nim	boundaryAdded	multipart.html#boundaryAdded	BoundaryState.boundaryAdded		97
-nim	boundaryRemoved	multipart.html#boundaryRemoved	BoundaryState.boundaryRemoved		97
-nim	BoundaryState	multipart.html#BoundaryState	enum BoundaryState		97
-nim	Boundary	multipart.html#Boundary	object Boundary		105
-nim	Multipart	multipart.html#Multipart	object Multipart		119
-nim	MultipartRef	multipart.html#MultipartRef	type MultipartRef		165
-nim	MultipartInvalidHeader	multipart.html#MultipartInvalidHeader	object MultipartInvalidHeader		170
-nim	cleanup	multipart.html#cleanup	proc cleanup(mp: var Multipart | MultipartRef)		410
-nim	cleanupInvalid	multipart.html#cleanupInvalid	proc cleanupInvalid(mp: var Multipart | MultipartRef)		422
-nim	initMultipart	multipart.html#initMultipart,string,MultipartFileCallback,MultipartProgressCallback,string	proc initMultipart(contentType: string; fileCallback: MultipartFileCallback = nil;\n              progressCallback: MultipartProgressCallback = nil;\n              sizeLimit = MultipartSizeLimit(); tmpDir = ""): Multipart		430
-nim	initMultipartRef	multipart.html#initMultipartRef,string,MultipartFileCallback,MultipartProgressCallback,string	proc initMultipartRef(contentType: string; fileCallback: MultipartFileCallback = nil;\n                 progressCallback: MultipartProgressCallback = nil;\n                 sizeLimit = MultipartSizeLimit(); tmpDir = ""): MultipartRef		443
-nim	parse	multipart.html#parse,Multipart,string,string	proc parse(mp: var Multipart; body: string; tmpDir = "")		538
-nim	parseAsync	multipart.html#parseAsync,MultipartRef,string,string	proc parseAsync(mp: MultipartRef; body: string; tmpDir = ""): owned(Future[void])		545
-nim	getTempDir	multipart.html#getTempDir	proc getTempDir(mp: Multipart | MultipartRef): lent string		559
-nim	getPath	multipart.html#getPath,Boundary	proc getPath(boundary: Boundary): lent string		563
-nim	getMagicNumbers	multipart.html#getMagicNumbers,Boundary	proc getMagicNumbers(boundary: Boundary): lent seq[byte]		569
-nim	len	multipart.html#len	proc len(mp: Multipart | MultipartRef): int		573
-nim	items	multipart.html#items.i	iterator items(mp: Multipart | MultipartRef): Boundary		577
+nim	progressBodyStart	multipart.html#progressBodyStart	MultipartProgressKind.progressBodyStart		23
+nim	progressFileStart	multipart.html#progressFileStart	MultipartProgressKind.progressFileStart		23
+nim	progressFileChunk	multipart.html#progressFileChunk	MultipartProgressKind.progressFileChunk		23
+nim	progressFileDone	multipart.html#progressFileDone	MultipartProgressKind.progressFileDone		23
+nim	progressBodyDone	multipart.html#progressBodyDone	MultipartProgressKind.progressBodyDone		23
+nim	MultipartProgressKind	multipart.html#MultipartProgressKind	enum MultipartProgressKind		23
+nim	MultipartProgress	multipart.html#MultipartProgress	object MultipartProgress		30
+nim	contentDisposition	multipart.html#contentDisposition	MultipartHeader.contentDisposition		37
+nim	contentType	multipart.html#contentType	MultipartHeader.contentType		37
+nim	MultipartHeader	multipart.html#MultipartHeader	enum MultipartHeader		37
+nim	MultipartFile	multipart.html#MultipartFile	MultipartDataType.MultipartFile		42
+nim	MultipartText	multipart.html#MultipartText	MultipartDataType.MultipartText		42
+nim	MultipartDataType	multipart.html#MultipartDataType	enum MultipartDataType		42
+nim	stateInvalidMagic	multipart.html#stateInvalidMagic	MultipartFileSigantureState.stateInvalidMagic		47
+nim	stateMoreMagic	multipart.html#stateMoreMagic	MultipartFileSigantureState.stateMoreMagic		47
+nim	stateValidMagic	multipart.html#stateValidMagic	MultipartFileSigantureState.stateValidMagic		47
+nim	MultipartFileSigantureState	multipart.html#MultipartFileSigantureState	enum MultipartFileSigantureState		47
+nim	MultipartHeaderTuple	multipart.html#MultipartHeaderTuple	tuple MultipartHeaderTuple		53
+nim	MultipartFileCallback	multipart.html#MultipartFileCallback	type MultipartFileCallback		56
+nim	MultipartProgressCallback	multipart.html#MultipartProgressCallback	type MultipartProgressCallback		59
+nim	MultipartAsyncProgressCallback	multipart.html#MultipartAsyncProgressCallback	type MultipartAsyncProgressCallback		62
+nim	MultipartFileCallbackSignature	multipart.html#MultipartFileCallbackSignature	type MultipartFileCallbackSignature		65
+nim	MultipartTextCallback	multipart.html#MultipartTextCallback	type MultipartTextCallback		68
+nim	MultipartSizeLimitError	multipart.html#MultipartSizeLimitError	object MultipartSizeLimitError		75
+nim	MultipartSizeLimit	multipart.html#MultipartSizeLimit	object MultipartSizeLimit		78
+nim	boundaryInit	multipart.html#boundaryInit	BoundaryState.boundaryInit		89
+nim	boundaryAdded	multipart.html#boundaryAdded	BoundaryState.boundaryAdded		89
+nim	boundaryRemoved	multipart.html#boundaryRemoved	BoundaryState.boundaryRemoved		89
+nim	BoundaryState	multipart.html#BoundaryState	enum BoundaryState		89
+nim	Boundary	multipart.html#Boundary	object Boundary		97
+nim	Multipart	multipart.html#Multipart	object Multipart		111
+nim	MultipartRef	multipart.html#MultipartRef	type MultipartRef		161
+nim	MultipartInvalidHeader	multipart.html#MultipartInvalidHeader	object MultipartInvalidHeader		166
+nim	cleanup	multipart.html#cleanup	proc cleanup(mp: var Multipart | MultipartRef)		478
+nim	cleanupInvalid	multipart.html#cleanupInvalid	proc cleanupInvalid(mp: var Multipart | MultipartRef)		490
+nim	initMultipart	multipart.html#initMultipart,string,MultipartFileCallback,MultipartProgressCallback,string	proc initMultipart(contentType: string; fileCallback: MultipartFileCallback = nil;\n              progressCallback: MultipartProgressCallback = nil;\n              sizeLimit = MultipartSizeLimit(); tmpDir = ""): Multipart		498
+nim	initMultipartRef	multipart.html#initMultipartRef,string,MultipartFileCallback,MultipartProgressCallback,string	proc initMultipartRef(contentType: string; fileCallback: MultipartFileCallback = nil;\n                 progressCallback: MultipartProgressCallback = nil;\n                 sizeLimit = MultipartSizeLimit(); tmpDir = ""): MultipartRef		512
+nim	parse	multipart.html#parse,Multipart,string,string	proc parse(mp: var Multipart; body: string; tmpDir = "")		611
+nim	parse	multipart.html#parse,Multipart,seq[byte],string	proc parse(mp: var Multipart; body: seq[byte]; tmpDir = "")		619
+nim	parseAsync	multipart.html#parseAsync,MultipartRef,string,string	proc parseAsync(mp: MultipartRef; body: string; tmpDir = ""): owned(Future[void])		625
+nim	parseAsync	multipart.html#parseAsync,MultipartRef,seq[byte],string	proc parseAsync(mp: MultipartRef; body: seq[byte]; tmpDir = ""): owned(\n    Future[void])		640
+nim	parse	multipart.html#parse,Multipart,ptr.UncheckedArray[byte],int,string	proc parse(mp: var Multipart; data: ptr UncheckedArray[byte]; dataLen: int;\n      tmpDir = "")		645
+nim	parseAsync	multipart.html#parseAsync,MultipartRef,ptr.UncheckedArray[byte],int,string	proc parseAsync(mp: MultipartRef; data: ptr UncheckedArray[byte]; dataLen: int;\n           tmpDir = ""): owned(Future[void])		652
+nim	getTempDir	multipart.html#getTempDir	proc getTempDir(mp: Multipart | MultipartRef): lent string		657
+nim	getPath	multipart.html#getPath,Boundary	proc getPath(boundary: Boundary): lent string		661
+nim	getMagicNumbers	multipart.html#getMagicNumbers,Boundary	proc getMagicNumbers(boundary: Boundary): lent seq[byte]		667
+nim	len	multipart.html#len	proc len(mp: Multipart | MultipartRef): int		671
+nim	items	multipart.html#items.i	iterator items(mp: Multipart | MultipartRef): Boundary		675
+nim	MultipartStreamer	multipart.html#MultipartStreamer	object MultipartStreamer		703
+nim	MultipartStreamerRef	multipart.html#MultipartStreamerRef	type MultipartStreamerRef		741
+nim	newMultipartStreamer	multipart.html#newMultipartStreamer,string,MultipartFileCallback,MultipartFileCallbackSignature,MultipartProgressCallback,string,int64	proc newMultipartStreamer(contentType: string;\n                     fileCallback: MultipartFileCallback = nil;\n    fileSignatureCallback: MultipartFileCallbackSignature = nil;\n                     progressCallback: MultipartProgressCallback = nil;\n                     sizeLimit = MultipartSizeLimit(); tmpDir = "";\n                     bodySize = 0'i64): MultipartStreamer		745
+nim	newMultipartStreamerRef	multipart.html#newMultipartStreamerRef,string,MultipartFileCallback,MultipartFileCallbackSignature,MultipartProgressCallback,string,int64	proc newMultipartStreamerRef(contentType: string;\n                        fileCallback: MultipartFileCallback = nil;\n    fileSignatureCallback: MultipartFileCallbackSignature = nil;\n                        progressCallback: MultipartProgressCallback = nil;\n                        sizeLimit = MultipartSizeLimit(); tmpDir = "";\n                        bodySize = 0'i64): MultipartStreamerRef		786
+nim	feed	multipart.html#feed,MultipartStreamer,openArray[byte]	proc feed(ms: var MultipartStreamer; data: openArray[byte])		1112
+nim	feed	multipart.html#feed,MultipartStreamer,string	proc feed(ms: var MultipartStreamer; data: string)		1118
+nim	feed	multipart.html#feed,MultipartStreamer,ptr.UncheckedArray[byte],int	proc feed(ms: var MultipartStreamer; data: ptr UncheckedArray[byte]; dataLen: int)		1123
+nim	isComplete	multipart.html#isComplete,MultipartStreamer	proc isComplete(ms: MultipartStreamer): bool		1128
+nim	boundaries	multipart.html#boundaries,MultipartStreamer	proc boundaries(ms: MultipartStreamer): lent seq[Boundary]		1132
+nim	invalidBoundaries	multipart.html#invalidBoundaries,MultipartStreamer	proc invalidBoundaries(ms: MultipartStreamer): lent seq[Boundary]		1135
+nim	items	multipart.html#items.i,MultipartStreamer	iterator items(ms: MultipartStreamer): Boundary		1138
+nim	cleanup	multipart.html#cleanup,MultipartStreamer	proc cleanup(ms: var MultipartStreamer)		1142
+nim	cleanupInvalid	multipart.html#cleanupInvalid,MultipartStreamer	proc cleanupInvalid(ms: var MultipartStreamer)		1146
+nim	len	multipart.html#len,MultipartStreamer	proc len(ms: MultipartStreamer): int		1149
+nim	getTempDir	multipart.html#getTempDir,MultipartStreamer	proc getTempDir(ms: MultipartStreamer): lent string		1152
+nim	isComplete	multipart.html#isComplete,MultipartStreamerRef	proc isComplete(ms: MultipartStreamerRef): bool		1157
+nim	boundaries	multipart.html#boundaries,MultipartStreamerRef	proc boundaries(ms: MultipartStreamerRef): lent seq[Boundary]		1160
+nim	invalidBoundaries	multipart.html#invalidBoundaries,MultipartStreamerRef	proc invalidBoundaries(ms: MultipartStreamerRef): lent seq[Boundary]		1163
+nim	items	multipart.html#items.i,MultipartStreamerRef	iterator items(ms: MultipartStreamerRef): Boundary		1166
+nim	cleanup	multipart.html#cleanup,MultipartStreamerRef	proc cleanup(ms: MultipartStreamerRef)		1170
+nim	cleanupInvalid	multipart.html#cleanupInvalid,MultipartStreamerRef	proc cleanupInvalid(ms: MultipartStreamerRef)		1173
+nim	len	multipart.html#len,MultipartStreamerRef	proc len(ms: MultipartStreamerRef): int		1176
+nimgrp	parse	multipart.html#parse-procs-all	proc		611
+nimgrp	invalidboundaries	multipart.html#invalidBoundaries-procs-all	proc		1135
+nimgrp	cleanup	multipart.html#cleanup-procs-all	proc		478
+nimgrp	feed	multipart.html#feed-procs-all	proc		1112
+nimgrp	parseasync	multipart.html#parseAsync-procs-all	proc		625
+nimgrp	iscomplete	multipart.html#isComplete-procs-all	proc		1128
+nimgrp	len	multipart.html#len-procs-all	proc		671
+nimgrp	gettempdir	multipart.html#getTempDir-procs-all	proc		657
+nimgrp	boundaries	multipart.html#boundaries-procs-all	proc		1132
+nimgrp	cleanupinvalid	multipart.html#cleanupInvalid-procs-all	proc		490
+nimgrp	items	multipart.html#items-iterators-all	iterator		675

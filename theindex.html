@@ -29,7 +29,13 @@
     <div class="container">
       <h1 class="title">Index</h1>
       Modules: <a href="index.html">multipart</a>.<br/><p /><h2>API symbols</h2>
-<dl><dt><a name="Boundary" href="#Boundary"><span>Boundary:</span></a></dt><dd><ul class="simple">
+<dl><dt><a name="boundaries" href="#boundaries"><span>boundaries:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: proc boundaries(ms: MultipartStreamer): lent seq[Boundary]" href="index.html#boundaries%2CMultipartStreamer">multipart: proc boundaries(ms: MultipartStreamer): lent seq[Boundary]</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc boundaries(ms: MultipartStreamerRef): lent seq[Boundary]" href="index.html#boundaries%2CMultipartStreamerRef">multipart: proc boundaries(ms: MultipartStreamerRef): lent seq[Boundary]</a></li>
+          </ul></dd>
+<dt><a name="Boundary" href="#Boundary"><span>Boundary:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: object Boundary" href="index.html#Boundary">multipart: object Boundary</a></li>
           </ul></dd>
@@ -52,10 +58,18 @@
 <dt><a name="cleanup" href="#cleanup"><span>cleanup:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: proc cleanup(mp: var Multipart | MultipartRef)" href="index.html#cleanup">multipart: proc cleanup(mp: var Multipart | MultipartRef)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc cleanup(ms: var MultipartStreamer)" href="index.html#cleanup%2CMultipartStreamer">multipart: proc cleanup(ms: var MultipartStreamer)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc cleanup(ms: MultipartStreamerRef)" href="index.html#cleanup%2CMultipartStreamerRef">multipart: proc cleanup(ms: MultipartStreamerRef)</a></li>
           </ul></dd>
 <dt><a name="cleanupInvalid" href="#cleanupInvalid"><span>cleanupInvalid:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: proc cleanupInvalid(mp: var Multipart | MultipartRef)" href="index.html#cleanupInvalid">multipart: proc cleanupInvalid(mp: var Multipart | MultipartRef)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc cleanupInvalid(ms: var MultipartStreamer)" href="index.html#cleanupInvalid%2CMultipartStreamer">multipart: proc cleanupInvalid(ms: var MultipartStreamer)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc cleanupInvalid(ms: MultipartStreamerRef)" href="index.html#cleanupInvalid%2CMultipartStreamerRef">multipart: proc cleanupInvalid(ms: MultipartStreamerRef)</a></li>
           </ul></dd>
 <dt><a name="contentDisposition" href="#contentDisposition"><span>contentDisposition:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -64,6 +78,14 @@
 <dt><a name="contentType" href="#contentType"><span>contentType:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: MultipartHeader.contentType" href="index.html#contentType">multipart: MultipartHeader.contentType</a></li>
+          </ul></dd>
+<dt><a name="feed" href="#feed"><span>feed:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: proc feed(ms: var MultipartStreamer; data: openArray[byte])" href="index.html#feed%2CMultipartStreamer%2CopenArray%5Bbyte%5D">multipart: proc feed(ms: var MultipartStreamer; data: openArray[byte])</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc feed(ms: var MultipartStreamer; data: ptr UncheckedArray[byte]; dataLen: int)" href="index.html#feed%2CMultipartStreamer%2Cptr.UncheckedArray%5Bbyte%5D%2Cint">multipart: proc feed(ms: var MultipartStreamer; data: ptr UncheckedArray[byte]; dataLen: int)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc feed(ms: var MultipartStreamer; data: string)" href="index.html#feed%2CMultipartStreamer%2Cstring">multipart: proc feed(ms: var MultipartStreamer; data: string)</a></li>
           </ul></dd>
 <dt><a name="getMagicNumbers" href="#getMagicNumbers"><span>getMagicNumbers:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -76,6 +98,8 @@
 <dt><a name="getTempDir" href="#getTempDir"><span>getTempDir:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: proc getTempDir(mp: Multipart | MultipartRef): lent string" href="index.html#getTempDir">multipart: proc getTempDir(mp: Multipart | MultipartRef): lent string</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc getTempDir(ms: MultipartStreamer): lent string" href="index.html#getTempDir%2CMultipartStreamer">multipart: proc getTempDir(ms: MultipartStreamer): lent string</a></li>
           </ul></dd>
 <dt><a name="initMultipart" href="#initMultipart"><span>initMultipart:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -93,13 +117,33 @@
                  progressCallback: MultipartProgressCallback = nil;
                  sizeLimit = MultipartSizeLimit(); tmpDir = &quot;&quot;): MultipartRef</a></li>
           </ul></dd>
+<dt><a name="invalidBoundaries" href="#invalidBoundaries"><span>invalidBoundaries:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: proc invalidBoundaries(ms: MultipartStreamer): lent seq[Boundary]" href="index.html#invalidBoundaries%2CMultipartStreamer">multipart: proc invalidBoundaries(ms: MultipartStreamer): lent seq[Boundary]</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc invalidBoundaries(ms: MultipartStreamerRef): lent seq[Boundary]" href="index.html#invalidBoundaries%2CMultipartStreamerRef">multipart: proc invalidBoundaries(ms: MultipartStreamerRef): lent seq[Boundary]</a></li>
+          </ul></dd>
+<dt><a name="isComplete" href="#isComplete"><span>isComplete:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: proc isComplete(ms: MultipartStreamer): bool" href="index.html#isComplete%2CMultipartStreamer">multipart: proc isComplete(ms: MultipartStreamer): bool</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc isComplete(ms: MultipartStreamerRef): bool" href="index.html#isComplete%2CMultipartStreamerRef">multipart: proc isComplete(ms: MultipartStreamerRef): bool</a></li>
+          </ul></dd>
 <dt><a name="items" href="#items"><span>items:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: iterator items(mp: Multipart | MultipartRef): Boundary" href="index.html#items.i">multipart: iterator items(mp: Multipart | MultipartRef): Boundary</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: iterator items(ms: MultipartStreamer): Boundary" href="index.html#items.i%2CMultipartStreamer">multipart: iterator items(ms: MultipartStreamer): Boundary</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: iterator items(ms: MultipartStreamerRef): Boundary" href="index.html#items.i%2CMultipartStreamerRef">multipart: iterator items(ms: MultipartStreamerRef): Boundary</a></li>
           </ul></dd>
 <dt><a name="len" href="#len"><span>len:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: proc len(mp: Multipart | MultipartRef): int" href="index.html#len">multipart: proc len(mp: Multipart | MultipartRef): int</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc len(ms: MultipartStreamer): int" href="index.html#len%2CMultipartStreamer">multipart: proc len(ms: MultipartStreamer): int</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc len(ms: MultipartStreamerRef): int" href="index.html#len%2CMultipartStreamerRef">multipart: proc len(ms: MultipartStreamerRef): int</a></li>
           </ul></dd>
 <dt><a name="Multipart" href="#Multipart"><span>Multipart:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
@@ -165,6 +209,14 @@
 <li><a class="reference external"
           data-doc-search-tag="multipart: object MultipartSizeLimitError" href="index.html#MultipartSizeLimitError">multipart: object MultipartSizeLimitError</a></li>
           </ul></dd>
+<dt><a name="MultipartStreamer" href="#MultipartStreamer"><span>MultipartStreamer:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: object MultipartStreamer" href="index.html#MultipartStreamer">multipart: object MultipartStreamer</a></li>
+          </ul></dd>
+<dt><a name="MultipartStreamerRef" href="#MultipartStreamerRef"><span>MultipartStreamerRef:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: type MultipartStreamerRef" href="index.html#MultipartStreamerRef">multipart: type MultipartStreamerRef</a></li>
+          </ul></dd>
 <dt><a name="MultipartText" href="#MultipartText"><span>MultipartText:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="multipart: MultipartDataType.MultipartText" href="index.html#MultipartText">multipart: MultipartDataType.MultipartText</a></li>
@@ -173,12 +225,54 @@
 <li><a class="reference external"
           data-doc-search-tag="multipart: type MultipartTextCallback" href="index.html#MultipartTextCallback">multipart: type MultipartTextCallback</a></li>
           </ul></dd>
+<dt><a name="newMultipartStreamer" href="#newMultipartStreamer"><span>newMultipartStreamer:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: proc newMultipartStreamer(contentType: string;
+                     fileCallback: MultipartFileCallback = nil;
+    fileSignatureCallback: MultipartFileCallbackSignature = nil;
+                     progressCallback: MultipartProgressCallback = nil;
+                     sizeLimit = MultipartSizeLimit(); tmpDir = &quot;&quot;;
+                     bodySize = 0'i64): MultipartStreamer" href="index.html#newMultipartStreamer%2Cstring%2CMultipartFileCallback%2CMultipartFileCallbackSignature%2CMultipartProgressCallback%2Cstring%2Cint64">multipart: proc newMultipartStreamer(contentType: string;
+                     fileCallback: MultipartFileCallback = nil;
+    fileSignatureCallback: MultipartFileCallbackSignature = nil;
+                     progressCallback: MultipartProgressCallback = nil;
+                     sizeLimit = MultipartSizeLimit(); tmpDir = &quot;&quot;;
+                     bodySize = 0'i64): MultipartStreamer</a></li>
+          </ul></dd>
+<dt><a name="newMultipartStreamerRef" href="#newMultipartStreamerRef"><span>newMultipartStreamerRef:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="multipart: proc newMultipartStreamerRef(contentType: string;
+                        fileCallback: MultipartFileCallback = nil;
+    fileSignatureCallback: MultipartFileCallbackSignature = nil;
+                        progressCallback: MultipartProgressCallback = nil;
+                        sizeLimit = MultipartSizeLimit(); tmpDir = &quot;&quot;;
+                        bodySize = 0'i64): MultipartStreamerRef" href="index.html#newMultipartStreamerRef%2Cstring%2CMultipartFileCallback%2CMultipartFileCallbackSignature%2CMultipartProgressCallback%2Cstring%2Cint64">multipart: proc newMultipartStreamerRef(contentType: string;
+                        fileCallback: MultipartFileCallback = nil;
+    fileSignatureCallback: MultipartFileCallbackSignature = nil;
+                        progressCallback: MultipartProgressCallback = nil;
+                        sizeLimit = MultipartSizeLimit(); tmpDir = &quot;&quot;;
+                        bodySize = 0'i64): MultipartStreamerRef</a></li>
+          </ul></dd>
 <dt><a name="parse" href="#parse"><span>parse:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
+          data-doc-search-tag="multipart: proc parse(mp: var Multipart; data: ptr UncheckedArray[byte]; dataLen: int;
+      tmpDir = &quot;&quot;)" href="index.html#parse%2CMultipart%2Cptr.UncheckedArray%5Bbyte%5D%2Cint%2Cstring">multipart: proc parse(mp: var Multipart; data: ptr UncheckedArray[byte]; dataLen: int;
+      tmpDir = &quot;&quot;)</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc parse(mp: var Multipart; body: seq[byte]; tmpDir = &quot;&quot;)" href="index.html#parse%2CMultipart%2Cseq%5Bbyte%5D%2Cstring">multipart: proc parse(mp: var Multipart; body: seq[byte]; tmpDir = &quot;&quot;)</a></li>
+          <li><a class="reference external"
           data-doc-search-tag="multipart: proc parse(mp: var Multipart; body: string; tmpDir = &quot;&quot;)" href="index.html#parse%2CMultipart%2Cstring%2Cstring">multipart: proc parse(mp: var Multipart; body: string; tmpDir = &quot;&quot;)</a></li>
           </ul></dd>
 <dt><a name="parseAsync" href="#parseAsync"><span>parseAsync:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
+          data-doc-search-tag="multipart: proc parseAsync(mp: MultipartRef; data: ptr UncheckedArray[byte]; dataLen: int;
+           tmpDir = &quot;&quot;): owned(Future[void])" href="index.html#parseAsync%2CMultipartRef%2Cptr.UncheckedArray%5Bbyte%5D%2Cint%2Cstring">multipart: proc parseAsync(mp: MultipartRef; data: ptr UncheckedArray[byte]; dataLen: int;
+           tmpDir = &quot;&quot;): owned(Future[void])</a></li>
+          <li><a class="reference external"
+          data-doc-search-tag="multipart: proc parseAsync(mp: MultipartRef; body: seq[byte]; tmpDir = &quot;&quot;): owned(
+    Future[void])" href="index.html#parseAsync%2CMultipartRef%2Cseq%5Bbyte%5D%2Cstring">multipart: proc parseAsync(mp: MultipartRef; body: seq[byte]; tmpDir = &quot;&quot;): owned(
+    Future[void])</a></li>
+          <li><a class="reference external"
           data-doc-search-tag="multipart: proc parseAsync(mp: MultipartRef; body: string; tmpDir = &quot;&quot;): owned(Future[void])" href="index.html#parseAsync%2CMultipartRef%2Cstring%2Cstring">multipart: proc parseAsync(mp: MultipartRef; body: string; tmpDir = &quot;&quot;): owned(Future[void])</a></li>
           </ul></dd>
 <dt><a name="progressBodyDone" href="#progressBodyDone"><span>progressBodyDone:</span></a></dt><dd><ul class="simple">
@@ -217,7 +311,7 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-05-15 12:17:56 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-06-16 12:16:28 UTC</small>
       </div>
     </div>
   </div>
