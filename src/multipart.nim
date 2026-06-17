@@ -13,11 +13,24 @@
 ## 
 ## The parser also supports callbacks for handling file data as it's being parsed, which can be useful for on-the-fly
 ## validation or processing of uploaded files.
+## 
+## This package provides both synchronous and asynchronous parsing capabilities, making it suitable for various use cases,
+## including web applications and APIs. The other Multipart parser is a streaming parser that can be used for large file
+## uploads or when you want to process the data as it arrives.
 
 import std/[os, streams, strutils, asyncdispatch,
             parseutils, options, oids, sequtils, macros]
 
+when defined(posix):
+  import std/posix
+
 import pkg/checksums/md5
+
+const
+  MaxHeaderBufSize* = 8192
+  MaxBoundaryLen* = 256
+  MaxBoundaries* = 1000
+  MaxHeaderLineLen* = 4096
 
 type
   MultipartProgressKind* = enum
@@ -83,6 +96,9 @@ type
       ## Maximum total body size in bytes (0 = unlimited)
     maxFieldSize*: int64
       ## Maximum size for a single text field value in bytes (0 = unlimited)
+
+  MultipartConfigError* = object of CatchableError
+    ## Raised when the multipart Content-Type is malformed
 
   # BoundaryEndCallback* = proc(boundary: Boundary): bool {.nimcall.}
   # A callback that runs after parsing a boundary
@@ -302,7 +318,7 @@ template sendProgressAsync(mp: MultipartRef, evt: MultipartProgress) =
 template checkFileSizeLimit(someBoundary) {.dirty.} =
   if mp.sizeLimit.maxFileSize > 0 and
       someBoundary[].fileSize > mp.sizeLimit.maxFileSize:
-    flushWriteBuf(someBoundary)
+    setLen(mp.fileWriteBuf, 0)
     someBoundary[].fileContent.close()
     removeFile(someBoundary[].filePath)
     someBoundary[].state = boundaryRemoved
@@ -388,10 +404,12 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
             add heading, body.readStr(contentDispositionLen)
             curr = body.readChar()
             while curr notin Newlines:
+              if heading.len >= MaxHeaderLineLen:
+                raise newException(MultipartSizeLimitError,
+                  "Multipart header line exceeds max length")
               add heading, curr
               curr = body.readChar()
             add headers, parseHeader(heading)
-            # curr = body.readChar() # new line
             skipNewlines()
           elif "c" & body.peekStr(contentTypeLen - 1).toLowerAscii == $contentType:
             var heading: string
@@ -399,6 +417,9 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
             add heading, body.readStr(contentTypeLen)
             curr = body.readChar()
             while curr notin Newlines:
+              if heading.len >= MaxHeaderLineLen:
+                raise newException(MultipartSizeLimitError,
+                  "Multipart header line exceeds max length")
               add heading, curr
               curr = body.readChar()
             add headers, parseheader(heading)
@@ -419,6 +440,9 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
         
         # this is a file boundary — create a new Boundary with file metadata, open a
         # temp file for writing, and add it to the boundaries sequence
+        if mp.boundaries.len >= MaxBoundaries:
+          raise newException(MultipartSizeLimitError,
+            "Exceeded maximum number of boundaries")
         if headers.len == 2:
           let fileId = $genOid()
           let filepath = mp.tmpDirectory / fileId
@@ -547,7 +571,14 @@ template parseImpl(progressSendTemplate: untyped) {.dirty.} =
   i += mp.boundaryLine.parseUntil(multipartType, {';'}, i)
   i += mp.boundaryLine.skipWhitespace(i)
   i += mp.boundaryLine.parseUntil(multipartBoundary, {'\c', '\l'}, i)
-  let boundary = multipartBoundary.split("boundary=")[1]
+  let boundaryParts = multipartBoundary.split("boundary=")
+  if boundaryParts.len < 2 or boundaryParts[1].len == 0:
+    raise newException(MultipartConfigError,
+      "Missing or empty boundary in Content-Type header")
+  let boundary = boundaryParts[1]
+  if boundary.len > MaxBoundaryLen:
+    raise newException(MultipartConfigError,
+      "Boundary exceeds maximum length of " & $MaxBoundaryLen & " bytes")
   discard existsOrCreateDir(mp.tmpDirectory)
   var
     skipUntilNextBoundary: bool
@@ -591,6 +622,13 @@ template parseImpl(progressSendTemplate: untyped) {.dirty.} =
           if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
             flushWriteBuf(currBoundary)
         of MultipartText:
+          if mp.sizeLimit.maxFieldSize > 0 and
+             currBoundary[].value.len >= mp.sizeLimit.maxFieldSize:
+            currBoundary[].state = boundaryRemoved
+            add mp.invalidBoundaries, currBoundary[]
+            raise newException(MultipartSizeLimitError,
+              "Text field '" & currBoundary[].fieldName &
+              "' exceeds max field size of " & $mp.sizeLimit.maxFieldSize & " bytes")
           add currBoundary[].value, curr
 
   if prevStreamBoundary.isSome:
@@ -627,13 +665,13 @@ proc parseAsync*(mp: MultipartRef, body: string, tmpDir = "") {.async.} =
   ## a WebSocket or SSE stream without blocking the event loop.
   ## 
   ## Example:
-  ## ```nim
+  ##   ```nim
   ## mp.asyncProgressCallback = proc(evt: MultipartProgress): Future[void] {.async.} =
   ##   await ws.send($evt)   # push to WebSocket
   ## 
   ## mp.progressChunkInterval = 64 * 1024  # emit every 64KB, not every byte
   ## await mp.parseAsync(body)
-  ## ```
+  ##  ```
   var body = StrReader(data: body, pos: 0)
   parseImpl(sendProgressAsync)
 
@@ -776,7 +814,14 @@ proc newMultipartStreamer*(contentType: string,
   i += contentType.parseUntil(multipartType, {';'}, i)
   i += contentType.skipWhitespace(i)
   i += contentType.parseUntil(multipartBoundary, {'\c', '\l'}, i)
-  result.boundary = multipartBoundary.split("boundary=")[1]
+  let boundaryParts = multipartBoundary.split("boundary=")
+  if boundaryParts.len < 2 or boundaryParts[1].len == 0:
+    raise newException(MultipartConfigError,
+      "Missing or empty boundary in Content-Type header")
+  result.boundary = boundaryParts[1]
+  if result.boundary.len > MaxBoundaryLen:
+    raise newException(MultipartConfigError,
+      "Boundary exceeds maximum length of " & $MaxBoundaryLen & " bytes")
   result.dashBoundary = "--" & result.boundary
   result.crlfDashBoundary = "\r\n--" & result.boundary
   result.dashDashBoundary = "--" & result.boundary & "--"
@@ -809,7 +854,7 @@ template streamerFlushWriteBuf(ms: var MultipartStreamer, bIdx: int) =
 template streamerCheckFileSizeLimit(ms: var MultipartStreamer, bIdx: int) =
   if ms.mp.sizeLimit.maxFileSize > 0 and bIdx >= 0 and
       ms.mp.boundaries[bIdx].fileSize > ms.mp.sizeLimit.maxFileSize:
-    streamerFlushWriteBuf(ms, bIdx)
+    setLen(ms.mp.fileWriteBuf, 0)
     ms.mp.boundaries[bIdx].fileContent.close()
     removeFile(ms.mp.boundaries[bIdx].filePath)
     ms.mp.boundaries[bIdx].state = boundaryRemoved
@@ -848,9 +893,9 @@ proc writeDataByte(ms: var MultipartStreamer, c: char) =
   of MultipartFile:
     ms.mp.fileWriteBuf.add(c)
     inc ms.mp.boundaries[bIdx].fileSize
+    streamerCheckFileSizeLimit(ms, bIdx)
     if ms.mp.fileWriteBuf.len >= ms.mp.fileWriteThreshold:
       streamerFlushWriteBuf(ms, bIdx)
-      streamerCheckFileSizeLimit(ms, bIdx)
     if ms.mp.progressChunkInterval <= 0 or
         (ms.mp.boundaries[bIdx].fileSize mod ms.mp.progressChunkInterval == 0):
       streamerSendProgress(ms, MultipartProgress(
@@ -897,6 +942,13 @@ proc writeDataByte(ms: var MultipartStreamer, c: char) =
         ms.currentBoundaryIdx = -1
         return
   of MultipartText:
+    if ms.mp.sizeLimit.maxFieldSize > 0 and
+       ms.mp.boundaries[bIdx].value.len >= ms.mp.sizeLimit.maxFieldSize:
+      ms.mp.boundaries[bIdx].state = boundaryRemoved
+      add ms.mp.invalidBoundaries, ms.mp.boundaries[bIdx]
+      ms.skipUntilNextBoundary = true
+      ms.currentBoundaryIdx = -1
+      return
     add ms.mp.boundaries[bIdx].value, c
 
 proc flushPendingAsData(ms: var MultipartStreamer) =
@@ -906,9 +958,13 @@ proc flushPendingAsData(ms: var MultipartStreamer) =
 
 proc createPart(ms: var MultipartStreamer, headers: seq[MultipartHeaderTuple]) =
   ## Create a new Boundary from parsed headers and add it to mp.boundaries.
+  if ms.mp.boundaries.len >= MaxBoundaries:
+    raise newException(MultipartSizeLimitError,
+      "Exceeded maximum number of boundaries")
   if headers.len == 2:
     let fileId = $genOid()
     let filepath = ms.mp.tmpDirectory / fileId
+    discard existsOrCreateDir(ms.mp.tmpDirectory)
     add ms.mp.boundaries,
       Boundary(
         dataType: MultipartFile,
@@ -1014,6 +1070,9 @@ proc feedImpl(ms: var MultipartStreamer, data: ptr UncheckedArray[byte], dataLen
       # Accumulate header bytes until \r\n\r\n
       ms.headerBuf.add(c)
       let hlen = ms.headerBuf.len
+      if ms.headerBuf.len >= MaxHeaderBufSize:
+        raise newException(MultipartSizeLimitError,
+          "Multipart headers exceed max buffer size")
       if hlen >= 4 and
           ms.headerBuf[hlen - 4] == '\r' and ms.headerBuf[hlen - 3] == '\n' and
           ms.headerBuf[hlen - 2] == '\r' and ms.headerBuf[hlen - 1] == '\n':
@@ -1175,3 +1234,18 @@ proc cleanupInvalid*(ms: MultipartStreamerRef) =
 
 proc len*(ms: MultipartStreamerRef): int =
   ms[].boundaries().len
+
+when defined(posix):
+  proc setupCleanupOnSignal*() =
+    ## Register signal handlers for SIGINT and SIGTERM that clean up
+    ## the default multipart temp directory on shutdown.
+    ## Call at server startup to prevent temp file accumulation on crash.
+    let tmpDir = getTempDir() / getMD5(getAppDir())
+    proc handler(sig: cint) {.noconv.} =
+      if dirExists(tmpDir):
+        for path in walkDir(tmpDir):
+          try: removeFile(path.path)
+          except: discard
+      quit(sig)
+    signal(SIGINT, handler)
+    signal(SIGTERM, handler)
