@@ -13,52 +13,127 @@
 </p>
 
 ## Features
-- Parses multipart/form-data content from HTTP requests
-- Supports file uploads and text fields
+- Parses `multipart/form-data` content from HTTP requests — supports file uploads and text fields
+- **Streaming parser** (`MultipartStreamer`) — feed body chunks as they arrive, no need to buffer the entire body in memory
+- Synchronous (`parse`) and asynchronous (`parseAsync`) parsing APIs
 - Progress callbacks for monitoring parsing progress (body start/done, file start/chunk/done)
-- Configurable size limits for files and overall body
-- Callbacks for handling file data during parsing (magic number validation, custom processing)
-- Automatic cleanup of temporary files after processing
+- **Magic-number signature validation** via callbacks to accept or reject files on the fly
+- Configurable size limits for files, text fields and the overall body (`MultipartSizeLimit`)
+- Automatic cleanup of temporary files (`cleanup`, `cleanupInvalid`, `setupCleanupOnSignal`)
 
 ## Examples
+
+### 1. Basic parsing
 ```nim
 import multipart
 
-let inputData = "..." # Your raw multipart/form-data body as a string or byte array
 let contentType = "multipart/form-data; boundary=----WebKitFormBoundaryABC123"
-  # content type header from the HTTP request, including the boundary
 
-# Progress callback to track parsing progress
-proc progressCallback(evt: MultipartProgress) =
-  case evt.kind
-  of progressBodyStart:
-    echo "Parsing started. Total bytes: ", evt.totalBytes
-  of progressFileStart:
-    echo "File upload started: ", evt.fileName
-  of progressFileChunk:
-    echo "Processing chunk... Bytes written: ", evt.bytesWritten
-  of progressFileDone:
-    echo "File upload completed: ", evt.fileName
-  of progressBodyDone:
-    echo "Parsing completed. Total bytes: ", evt.totalBytes
+# Raw multipart/form-data body as a string or seq[byte]
+let body = "...multipart body..." & readFile("photo.png")
 
-# Initialize the multipart parser
-var mp = initMultipart(contentType, tmpDir = getTempDir() / "multipart_example")
-mp.progressCallback = progressCallback
-  # optionally, add a progress callback to monitor parsing progress (body start/done, file start/chunk/done)
+var mp = initMultipart(contentType, tmpDir = getTempDir() / "uploads")
+mp.parse(body)
 
-# Parse the multipart data
-mp.parse(inputData)
-
-# Display parsed data
 for b in mp:
   case b.dataType
   of MultipartText:
     echo "Text field: ", b.fieldName, " = ", b.value
   of MultipartFile:
-    echo "File field: ", b.fieldName, ", File name: ", b.fileName
+    echo "File: ", b.fieldName, " -> ", b.fileName, " (", b.fileType, ")"
     if fileExists(b.getPath):
-      echo "Stored file path: ", b.getPath
+      echo "Stored at: ", b.getPath
+
+mp.cleanup()  # remove temporary files written during parsing
+```
+
+### 2. Progress tracking
+```nim
+var mp = initMultipart(contentType,
+  progressCallback = proc(evt: MultipartProgress) =
+    case evt.kind
+    of progressBodyStart:
+      echo "Parsing started. Total bytes: ", evt.totalBytes
+    of progressFileStart:
+      echo "File upload started: ", evt.fileName
+    of progressFileChunk:
+      echo "Wrote ", evt.bytesWritten, " bytes so far"
+    of progressFileDone:
+      echo "File upload completed: ", evt.fileName
+    of progressBodyDone:
+      echo "Parsing completed. Total bytes: ", evt.totalBytes
+)
+
+mp.progressChunkInterval = 64 * 1024  # fire a chunk event every 64KB, not every byte
+mp.parse(body)
+```
+
+### 3. Magic-number (signature) validation
+```nim
+var mp = initMultipart(contentType, tmpDir = getTempDir() / "uploads")
+
+# Accept only PNG files by validating their magic bytes
+mp.fileSignatureCallback = proc(boundary: ptr Boundary, pos: int, c: ptr char): MultipartFileSigantureState =
+  const pngSig = @[0x89'u8, 0x50'u8, 0x4E'u8, 0x47'u8, 0x0D'u8, 0x0A'u8, 0x1A'u8, 0x0A'u8]
+  let b = byte(ord(c[]))
+  if pos < pngSig.len and b == pngSig[pos]:
+    if pos + 1 == pngSig.len: stateValidMagic
+    else:                     stateMoreMagic
+  else:
+    stateInvalidMagic
+
+mp.parse(body)
+
+# Rejected files are moved to invalidBoundaries
+for b in mp.invalidBoundaries:
+  echo "Rejected: ", b.fileName
+
+mp.cleanupInvalid()  # remove only the rejected temporary files
+```
+
+### 4. Size limits
+```nim
+var mp = initMultipart(contentType,
+  sizeLimit = MultipartSizeLimit(
+    maxFileSize: 10 * 1024 * 1024,  # 10 MB per file
+    maxBodySize: 50 * 1024 * 1024,  # 50 MB total body
+    maxFieldSize: 64 * 1024         # 64 KB per text field
+  )
+)
+
+try:
+  mp.parse(body)
+except MultipartSizeLimitError as e:
+  echo "Rejected: ", e.msg
+```
+
+### 5. Streaming parser
+```nim
+# Feed body chunks as they arrive from the network — no need to buffer the whole body
+var ms = newMultipartStreamer(contentType, tmpDir = getTempDir() / "uploads",
+                              bodySize = contentLength)
+
+ms.feed(chunk1)
+ms.feed(chunk2)
+# ... feed more chunks as they arrive
+
+if ms.isComplete():
+  for b in ms.boundaries():
+    echo b.fieldName, " -> ", b.fileName
+  ms.cleanup()
+```
+
+### 6. Async parsing
+```nim
+import multipart, asyncdispatch
+
+proc handleUpload() {.async.} =
+  var mp = initMultipartRef(contentType)
+
+  mp.asyncProgressCallback = proc(evt: MultipartProgress): Future[void] {.async.} =
+    await ws.send($evt)  # stream progress to a WebSocket / SSE client
+
+  await mp.parseAsync(body)
 ```
 
 If you're looking for a full featured input validator you can use `openpeeps/bag` package to validate input data, forms, including `multipart/form-data`. Give a try https://github.com/openpeeps/bag
