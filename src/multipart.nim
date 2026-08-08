@@ -263,6 +263,23 @@ proc dataLen(r: StrReader): int {.inline.} = r.data.len
 proc dataLen(r: ByteReader): int {.inline.} = r.data.len
 proc dataLen(r: ByteSliceReader): int {.inline.} = r.len
 
+proc openPrivateFile*(path: string): File =
+  ## Create `path` for writing with 0600 permissions and O_EXCL so a
+  ## pre-existing file or symlink at the path cannot be followed (defeats the
+  ## temp-file symlink race) and the file is not world/group readable.
+  ## Raises IOError if the path already exists or creation fails.
+  when defined(posix):
+    proc c_fdopen(fd: cint; mode: cstring): File {.
+      importc: "fdopen", header: "<stdio.h>".}
+    let fd = posix.open(path.cstring,
+                        O_WRONLY or O_CREAT or O_EXCL or O_TRUNC, cint(0o600))
+    if fd < 0:
+      raise newException(IOError, "cannot create file (exists or not permitted): " & path)
+    result = c_fdopen(fd, "wb")
+  else:
+    # Windows fallback: std open with default permissions.
+    result = open(path, fmWrite)
+
 proc parseHeader(line: string): MultipartHeaderTuple =
   # Parse a multipart header line into a MultipartHeaderTuple
   result.value = @[]
@@ -283,6 +300,13 @@ proc parseHeader(line: string): MultipartHeaderTuple =
         setLen(v, 0) # skip form-data
       else:
         let kv = v.split('=', 1)
+        # A Content-Disposition parameter without a '=' (e.g. `name` instead of
+        # `name="x"`) is malformed. Never index kv[1] blindly — that raised an
+        # IndexDefect (unrecoverable) on hostile input; raise a CatchableError
+        # so the caller can reject the request with 4xx instead of crashing.
+        if kv.len < 2:
+          raise newException(MultipartInvalidHeader,
+            "Malformed multipart parameter (missing '='): " & v)
         add result.value, (kv[0], kv[1].unescape)
       inc(i)
 
@@ -444,6 +468,11 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
           raise newException(MultipartSizeLimitError,
             "Exceeded maximum number of boundaries")
         if headers.len == 2:
+          # Missing name/filename or Content-Type value → CatchableError, never
+          # an IndexDefect (which would abort the process on hostile input).
+          if headers[0].value.len < 2 or headers[1].value.len < 1:
+            raise newException(MultipartInvalidHeader,
+              "Malformed multipart file part: missing name/filename or Content-Type")
           let fileId = $genOid()
           let filepath = mp.tmpDirectory / fileId
           add mp.boundaries,
@@ -454,7 +483,7 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
               fileName: headers[0].value[1][1],
               fileType: headers[1].value[0][0],
               filePath: filepath,
-              fileContent: open(filepath, fmWrite),
+              fileContent: openPrivateFile(filepath),
               # initialize signature tracking so callbacks can run as bytes are written
               signatureState: MultipartFileSigantureState.stateMoreMagic,
               magicNumbers: @[]
@@ -471,6 +500,9 @@ template parseBoundary(progressSendTemplate) {.dirty.} =
         # this is a text field boundary — create a new Boundary with the field
         # name and an empty value, and add it to the boundaries sequence
         elif headers.len == 1:
+          if headers[0].value.len < 1:
+            raise newException(MultipartInvalidHeader,
+              "Malformed multipart text part: missing field name")
           var inputBoundary =
             Boundary(
               dataType: MultipartText,
@@ -613,6 +645,12 @@ template parseImpl(progressSendTemplate: untyped) {.dirty.} =
     of '-':
       parseBoundary(progressSendTemplate)
     else:
+      # Preamble/epilogue bytes before the first boundary or after the closing
+      # boundary: no current part exists yet. Guard the index — indexing an
+      # empty `boundaries` seq raised an IndexDefect on bodies that begin with
+      # non-boundary data (preamble) or pure garbage.
+      if mp.boundaries.len == 0:
+        continue
       currBoundary = addr(mp.boundaries[^1])
       if currBoundary != nil:
         case currBoundary[].dataType
@@ -962,6 +1000,12 @@ proc createPart(ms: var MultipartStreamer, headers: seq[MultipartHeaderTuple]) =
     raise newException(MultipartSizeLimitError,
       "Exceeded maximum number of boundaries")
   if headers.len == 2:
+    # A well-formed file part has Content-Disposition with a `name` and a
+    # `filename`, plus a Content-Type value. Missing pieces (hostile or broken
+    # clients) must raise a CatchableError, never an IndexDefect.
+    if headers[0].value.len < 2 or headers[1].value.len < 1:
+      raise newException(MultipartInvalidHeader,
+        "Malformed multipart file part: missing name/filename or Content-Type")
     let fileId = $genOid()
     let filepath = ms.mp.tmpDirectory / fileId
     discard existsOrCreateDir(ms.mp.tmpDirectory)
@@ -973,7 +1017,7 @@ proc createPart(ms: var MultipartStreamer, headers: seq[MultipartHeaderTuple]) =
         fileName: headers[0].value[1][1],
         fileType: headers[1].value[0][0],
         filePath: filepath,
-        fileContent: open(filepath, fmWrite),
+        fileContent: openPrivateFile(filepath),
         signatureState: MultipartFileSigantureState.stateMoreMagic,
         magicNumbers: @[]
       )
@@ -984,6 +1028,9 @@ proc createPart(ms: var MultipartStreamer, headers: seq[MultipartHeaderTuple]) =
       fileName:  ms.mp.boundaries[ms.currentBoundaryIdx].fileName
     ))
   elif headers.len == 1:
+    if headers[0].value.len < 1:
+      raise newException(MultipartInvalidHeader,
+        "Malformed multipart text part: missing field name")
     add ms.mp.boundaries,
       Boundary(
         dataType: MultipartText,
