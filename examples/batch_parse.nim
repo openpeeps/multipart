@@ -25,7 +25,7 @@ proc buildBody(): string =
            "Alice\r\n" &
            "--" & boundary & "\r\n" &
            "Content-Disposition: form-data; name=\"bio\"\r\n\r\n" &
-           "A short bio\r\n" &
+           "multi-dash line\r\nsecond line\r\n" &
            "--" & boundary & "\r\n" &
            "Content-Disposition: form-data; name=\"avatar\"; filename=\"me.png\"\r\n" &
            "Content-Type: image/png\r\n\r\n" &
@@ -95,7 +95,7 @@ proc demoParseSeq() =
   mp.parse(bytes)
   for b in mp:
     if b.dataType == MultipartText:
-      echo "    text ", b.fieldName, " = ", b.value
+      echo "    text ", b.fieldName, " = ", b.value.escape()
   mp.cleanup()
 
 proc demoParsePtr() =

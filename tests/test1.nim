@@ -83,8 +83,25 @@ suite "Multipart text fields":
     mp.parse(body)
     check mp.len == 1
     for b in mp:
-      check "line1" in b.value
-      check "line3" in b.value
+      check b.value == "line1\r\nline2\r\nline3"
+
+  test "text field with dashes in value":
+    # A single '-' inside a text value must not be mistaken for the start of
+    # a boundary delimiter; previously "some-pixel-data" lost the "-d".
+    let body = buildBody(textPart("code", "some-pixel-data"))
+    var mp = initMultipart(contentType, tmpDir = tmpDir())
+    mp.parse(body)
+    check mp.len == 1
+    for b in mp:
+      check b.value == "some-pixel-data"
+
+  test "text field whose first byte is a dash":
+    let body = buildBody(textPart("code", "--not-a-boundary"))
+    var mp = initMultipart(contentType, tmpDir = tmpDir())
+    mp.parse(body)
+    check mp.len == 1
+    for b in mp:
+      check b.value == "--not-a-boundary"
 
 #
 # Suite: file uploads
@@ -314,11 +331,15 @@ Content-Type: image/png
     for b in mp:
       if b.dataType == MultipartText:
         textFields.add((b.fieldName, b.value))
+    # This hand-built body leaves a blank line after each value
+    # ("John\r\n\r\n------boundary"), so the first "\r\n" after the value is
+    # part data, not the delimiter — mirroring the streamer's CRLF-preserving
+    # behavior.
     check textFields == @[
-      ("firstname", "John"),
-      ("lastname", "Doe 2"),
-      ("email_address", "john.doe@example.com"),
-      ("whitespaces", "   ")
+      ("firstname", "John\r\n"),
+      ("lastname", "Doe 2\r\n"),
+      ("email_address", "john.doe@example.com\r\n"),
+      ("whitespaces", "   \r\n")
     ]
 
   test "Parse file fields":

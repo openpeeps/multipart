@@ -403,130 +403,158 @@ template runFileCallback(progressSendTemplate, someBoundary) {.dirty.} =
       skipUntilNextBoundary = true
       break
 
-template parseBoundary(progressSendTemplate) {.dirty.} =
-  var currBoundary: string
-  add currBoundary, curr
-  curr = body.readChar()
-  let len = len(boundary)
-  add currBoundary, curr
-  case curr:
-  of '-':
-    if body.peekStr(len).startsWith(boundary):
-      add currBoundary, body.readStr(len)
+template writeToCurrentPart(progressSendTemplate: untyped, c: char) {.dirty.} =
+  # Write one data byte to the current part (file or text field).
+  # Bytes before the first boundary (preamble/epilogue) and while scanning
+  # past a rejected part (`skipUntilNextBoundary`) are ignored.
+  if skipUntilNextBoundary or mp.boundaries.len == 0:
+    return
+  currBoundary = addr(mp.boundaries[^1])
+  if currBoundary != nil:
+    case currBoundary[].dataType
+    of MultipartFile:
+      mp.fileWriteBuf.add(c)
+      runFileCallback(progressSendTemplate, currBoundary)
+      if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
+        flushWriteBuf(currBoundary)
+    of MultipartText:
+      if mp.sizeLimit.maxFieldSize > 0 and
+         currBoundary[].value.len >= mp.sizeLimit.maxFieldSize:
+        currBoundary[].state = boundaryRemoved
+        add mp.invalidBoundaries, currBoundary[]
+        raise newException(MultipartSizeLimitError,
+          "Text field '" & currBoundary[].fieldName &
+          "' exceeds max field size of " & $mp.sizeLimit.maxFieldSize & " bytes")
+      add currBoundary[].value, c
+
+template parsePartHeadersAndCreate(progressSendTemplate: untyped) {.dirty.} =
+  # `curr` holds the first byte after the boundary line (its trailing CRLF and
+  # any whitespace already consumed). Parse the part headers, close the previous
+  # file part if one is open, and create the new `Boundary`.
+  var headers: seq[MultipartHeaderTuple]
+  while true:
+    if "c" & body.peekStr(contentDispositionLen - 1).toLowerAscii == $contentDisposition:
+      var heading: string
+      add heading, curr
+      add heading, body.readStr(contentDispositionLen)
+      curr = body.readChar()
+      while curr notin Newlines:
+        if heading.len >= MaxHeaderLineLen:
+          raise newException(MultipartSizeLimitError,
+            "Multipart header line exceeds max length")
+        add heading, curr
+        curr = body.readChar()
+      add headers, parseHeader(heading)
+      skipNewlines()
+    elif "c" & body.peekStr(contentTypeLen - 1).toLowerAscii == $contentType:
+      var heading: string
+      add heading, curr
+      add heading, body.readStr(contentTypeLen)
+      curr = body.readChar()
+      while curr notin Newlines:
+        if heading.len >= MaxHeaderLineLen:
+          raise newException(MultipartSizeLimitError,
+            "Multipart header line exceeds max length")
+        add heading, curr
+        curr = body.readChar()
+      add headers, parseheader(heading)
+      skipNewlines()
+    else: break
+  skipNewlines()
+  if prevStreamBoundary.isSome:
+    # close previous file boundary and run callback one last time with final file size
+    flushWriteBuf(prevStreamBoundary.get)
+    progressSendTemplate(mp, MultipartProgress(
+      kind:         progressFileDone,
+      fieldName:    prevStreamBoundary.get[].fieldName,
+      fileName:     prevStreamBoundary.get[].fileName,
+      bytesWritten: prevStreamBoundary.get[].fileSize
+    ))
+    prevStreamBoundary.get[].fileContent.close()
+    prevStreamBoundary = none(ptr Boundary)
+
+  # this is a file boundary - create a new Boundary with file metadata, open a
+  # temp file for writing, and add it to the boundaries sequence
+  if mp.boundaries.len >= MaxBoundaries:
+    raise newException(MultipartSizeLimitError,
+      "Exceeded maximum number of boundaries")
+  if headers.len == 2:
+    # Missing name/filename or Content-Type value -> CatchableError, never
+    # an IndexDefect (which would abort the process on hostile input).
+    if headers[0].value.len < 2 or headers[1].value.len < 1:
+      raise newException(MultipartInvalidHeader,
+        "Malformed multipart file part: missing name/filename or Content-Type")
+    let fileId = $genOid()
+    let filepath = mp.tmpDirectory / fileId
+    add mp.boundaries,
+      Boundary(
+        dataType: MultipartFile,
+        fileId: fileId,
+        fieldName: headers[0].value[0][1],
+        fileName: headers[0].value[1][1],
+        fileType: headers[1].value[0][0],
+        filePath: filepath,
+        fileContent: openPrivateFile(filepath),
+        # initialize signature tracking so callbacks can run as bytes are written
+        signatureState: MultipartFileSigantureState.stateMoreMagic,
+        magicNumbers: @[]
+      )
+    prevStreamBoundary = some(mp.boundaries[^1].addr)
+    progressSendTemplate(mp, MultipartProgress(
+      kind:      progressFileStart,
+      fieldName: prevStreamBoundary.get[].fieldName,
+      fileName:  prevStreamBoundary.get[].fileName
+    ))
+    # the first data byte is still pending in `curr` - push it back so the
+    # main loop writes it (empty file parts must not swallow the next boundary)
+    dec body.pos
+
+  # this is a text field boundary - create a new Boundary with the field
+  # name and an empty value, and add it to the boundaries sequence
+  elif headers.len == 1:
+    if headers[0].value.len < 1:
+      raise newException(MultipartInvalidHeader,
+        "Malformed multipart text part: missing field name")
+    add mp.boundaries,
+      Boundary(
+        dataType: MultipartText,
+        fieldName: headers[0].value[0][1]
+      )
+    # the first data byte is still pending in `curr` - push it back so the
+    # main loop writes it into the new text boundary
+    dec body.pos
+
+template matchBoundary(progressSendTemplate: untyped) {.dirty.} =
+  # `curr` is the first byte of a boundary prefix ("--boundary" or "\r\n--boundary")
+  # and has already been consumed by the main loop; `body.pos` points at the
+  # remaining `prefixLen - 1` prefix bytes. Verify the two bytes that follow the
+  # prefix: "--" closes the body, "\r\n" starts a new part's headers, anything
+  # else means the prefix was ordinary part data (e.g. a value containing the
+  # boundary string) and must be preserved byte-for-byte instead of being dropped.
+  let rem = prefixLen - 1
+  let afterBytes = body.peekStr(rem + 2)
+  if afterBytes.len >= rem + 2 and afterBytes[rem .. ^1] == "--":
+    # closing boundary: "--boundary--" (or "\r\n--boundary--")
+    isFirstBoundary = false
+    discard body.readStr(rem + 2)
+    stop = true
+  elif afterBytes.len >= rem + 2 and afterBytes[rem .. ^1] == "\r\n":
+    # a new part follows - consume the prefix and the CRLF after the boundary
+    # line, then parse its headers
+    isFirstBoundary = false
+    discard body.readStr(rem + 2)
+    if body.atEnd:
+      stop = true
+    else:
       curr = body.readChar()
       skipWhitespaces()
-      if body.peekStr(2) == "--":
-        while not body.atEnd:
-          discard body.readChar() # consume remaining chars
-          break
-      else:
-        var headers: seq[MultipartHeaderTuple]
-        while true:
-          if "c" & body.peekStr(contentDispositionLen - 1).toLowerAscii == $contentDisposition:
-            var heading: string
-            add heading, curr
-            add heading, body.readStr(contentDispositionLen)
-            curr = body.readChar()
-            while curr notin Newlines:
-              if heading.len >= MaxHeaderLineLen:
-                raise newException(MultipartSizeLimitError,
-                  "Multipart header line exceeds max length")
-              add heading, curr
-              curr = body.readChar()
-            add headers, parseHeader(heading)
-            skipNewlines()
-          elif "c" & body.peekStr(contentTypeLen - 1).toLowerAscii == $contentType:
-            var heading: string
-            add heading, curr
-            add heading, body.readStr(contentTypeLen)
-            curr = body.readChar()
-            while curr notin Newlines:
-              if heading.len >= MaxHeaderLineLen:
-                raise newException(MultipartSizeLimitError,
-                  "Multipart header line exceeds max length")
-              add heading, curr
-              curr = body.readChar()
-            add headers, parseheader(heading)
-            skipNewlines()
-          else: break
-        skipNewlines()
-        if prevStreamBoundary.isSome:
-          # close previous file boundary and run callback one last time with final file size
-          flushWriteBuf(prevStreamBoundary.get)
-          progressSendTemplate(mp, MultipartProgress(
-            kind:         progressFileDone,
-            fieldName:    prevStreamBoundary.get[].fieldName,
-            fileName:     prevStreamBoundary.get[].fileName,
-            bytesWritten: prevStreamBoundary.get[].fileSize
-          ))
-          prevStreamBoundary.get[].fileContent.close()
-          prevStreamBoundary = none(ptr Boundary)
-        
-        # this is a file boundary — create a new Boundary with file metadata, open a
-        # temp file for writing, and add it to the boundaries sequence
-        if mp.boundaries.len >= MaxBoundaries:
-          raise newException(MultipartSizeLimitError,
-            "Exceeded maximum number of boundaries")
-        if headers.len == 2:
-          # Missing name/filename or Content-Type value → CatchableError, never
-          # an IndexDefect (which would abort the process on hostile input).
-          if headers[0].value.len < 2 or headers[1].value.len < 1:
-            raise newException(MultipartInvalidHeader,
-              "Malformed multipart file part: missing name/filename or Content-Type")
-          let fileId = $genOid()
-          let filepath = mp.tmpDirectory / fileId
-          add mp.boundaries,
-            Boundary(
-              dataType: MultipartFile,
-              fileId: fileId,
-              fieldName: headers[0].value[0][1],
-              fileName: headers[0].value[1][1],
-              fileType: headers[1].value[0][0],
-              filePath: filepath,
-              fileContent: openPrivateFile(filepath),
-              # initialize signature tracking so callbacks can run as bytes are written
-              signatureState: MultipartFileSigantureState.stateMoreMagic,
-              magicNumbers: @[]
-            )
-          prevStreamBoundary = some(mp.boundaries[^1].addr)
-          progressSendTemplate(mp, MultipartProgress(
-            kind:      progressFileStart,
-            fieldName: prevStreamBoundary.get[].fieldName,
-            fileName:  prevStreamBoundary.get[].fileName
-          ))
-          mp.fileWriteBuf.add(curr)
-          runFileCallback(progressSendTemplate, prevStreamBoundary.get)
-        
-        # this is a text field boundary — create a new Boundary with the field
-        # name and an empty value, and add it to the boundaries sequence
-        elif headers.len == 1:
-          if headers[0].value.len < 1:
-            raise newException(MultipartInvalidHeader,
-              "Malformed multipart text part: missing field name")
-          var inputBoundary =
-            Boundary(
-              dataType: MultipartText,
-              fieldName: headers[0].value[0][1]
-            )
-          # add inputBoundary.value, curr
-          add mp.boundaries, inputBoundary
-          dec body.pos
-      setLen(currBoundary, 0)
-    else:
-      if prevStreamBoundary.isSome:
-        mp.fileWriteBuf.add(currBoundary)
-        prevStreamBoundary.get[].fileSize += currBoundary.len.int64
-        if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
-          flushWriteBuf(prevStreamBoundary.get)
-          checkFileSizeLimit(prevStreamBoundary.get)
-      else:
-        add mp.boundaries[^1].value, currBoundary
-      setLen(currBoundary, 0)
-  else: discard
-  if prevStreamBoundary.isSome:
-    mp.fileWriteBuf.add(currBoundary)
-    prevStreamBoundary.get[].fileSize += currBoundary.len.int64
-    setLen(currBoundary, 0)
+      parsePartHeadersAndCreate(progressSendTemplate)
+      skipUntilNextBoundary = false
+  else:
+    # not a boundary - write the matched prefix back as part data
+    writeToCurrentPart(progressSendTemplate, curr)
+    for ch in body.readStr(rem):
+      writeToCurrentPart(progressSendTemplate, ch)
 
 #
 # Public API
@@ -613,62 +641,39 @@ template parseImpl(progressSendTemplate: untyped) {.dirty.} =
     raise newException(MultipartConfigError,
       "Boundary exceeds maximum length of " & $MaxBoundaryLen & " bytes")
   discard existsOrCreateDir(mp.tmpDirectory)
+  let
+    crlfDash = "\r\n--" & boundary
+    dashBoundary = "--" & boundary
+    crlfDashTail = crlfDash[1 .. ^1]          # "\n--boundary"
+    dashBoundaryTail = dashBoundary[1 .. ^1]  # "-boundary"
   var
     skipUntilNextBoundary: bool
     currBoundary: ptr Boundary
     curr: char
-  while not atEnd(body):
-    if skipUntilNextBoundary:
-      while curr != '-' and (body.atEnd == false):
-        curr = body.readChar()
-      parseBoundary(progressSendTemplate)
-      skipUntilNextBoundary = false
+    stop: bool
+    isFirstBoundary = true
+  while not atEnd(body) and not stop:
+    curr = body.readChar()
+    var prefixLen = 0
+    if curr == '\r':
+      # a boundary delimiter is a single "\r\n" immediately before "--{boundary}";
+      # anything else is data and must be preserved (fixes dropped newlines)
+      if body.peekStr(crlfDashTail.len) == crlfDashTail:
+        prefixLen = crlfDash.len
+    elif curr == '-' and (isFirstBoundary or
+          # a freshly created, still-empty part: the header scan already
+          # consumed the delimiter CRLF, so the next boundary appears bare
+          (mp.boundaries.len > 0 and
+           ((mp.boundaries[^1].dataType == MultipartText and mp.boundaries[^1].value.len == 0) or
+            (mp.boundaries[^1].dataType == MultipartFile and mp.boundaries[^1].fileSize == 0)))):
+      # only the first boundary, or the boundary of an empty part, may start
+      # without a preceding CRLF
+      if body.peekStr(dashBoundaryTail.len) == dashBoundaryTail:
+        prefixLen = dashBoundary.len
+    if prefixLen > 0:
+      matchBoundary(progressSendTemplate)
     else:
-      curr = body.readChar()
-    case curr
-    of Newlines:
-      let maxLook = 4 + boundary.len
-      let seq = curr & body.peekStr(maxLook)
-      var idx = 0
-      while idx < seq.len and seq[idx] in Newlines:
-        inc idx
-      let rem = if idx < seq.len: seq.substr(idx) else: ""
-      if rem.startsWith("--" & boundary & "--"):
-        break
-      elif rem.startsWith("--" & boundary):
-        continue
-      else:
-        if prevStreamBoundary.isSome:
-          mp.fileWriteBuf.add(curr)
-          runFileCallback(progressSendTemplate, prevStreamBoundary.get)
-          if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
-            flushWriteBuf(prevStreamBoundary.get)
-    of '-':
-      parseBoundary(progressSendTemplate)
-    else:
-      # Preamble/epilogue bytes before the first boundary or after the closing
-      # boundary: no current part exists yet. Guard the index — indexing an
-      # empty `boundaries` seq raised an IndexDefect on bodies that begin with
-      # non-boundary data (preamble) or pure garbage.
-      if mp.boundaries.len == 0:
-        continue
-      currBoundary = addr(mp.boundaries[^1])
-      if currBoundary != nil:
-        case currBoundary[].dataType
-        of MultipartFile:
-          mp.fileWriteBuf.add(curr)
-          runFileCallback(progressSendTemplate, currBoundary)
-          if mp.fileWriteBuf.len >= mp.fileWriteThreshold:
-            flushWriteBuf(currBoundary)
-        of MultipartText:
-          if mp.sizeLimit.maxFieldSize > 0 and
-             currBoundary[].value.len >= mp.sizeLimit.maxFieldSize:
-            currBoundary[].state = boundaryRemoved
-            add mp.invalidBoundaries, currBoundary[]
-            raise newException(MultipartSizeLimitError,
-              "Text field '" & currBoundary[].fieldName &
-              "' exceeds max field size of " & $mp.sizeLimit.maxFieldSize & " bytes")
-          add currBoundary[].value, curr
+      writeToCurrentPart(progressSendTemplate, curr)
 
   if prevStreamBoundary.isSome:
     flushWriteBuf(prevStreamBoundary.get)
