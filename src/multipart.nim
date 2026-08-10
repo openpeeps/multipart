@@ -982,11 +982,12 @@ proc writeDataByte(ms: var MultipartStreamer, c: char) =
   of MultipartText:
     if ms.mp.sizeLimit.maxFieldSize > 0 and
        ms.mp.boundaries[bIdx].value.len >= ms.mp.sizeLimit.maxFieldSize:
-      ms.mp.boundaries[bIdx].state = boundaryRemoved
-      add ms.mp.invalidBoundaries, ms.mp.boundaries[bIdx]
-      ms.skipUntilNextBoundary = true
-      ms.currentBoundaryIdx = -1
-      return
+      # Match the batch parser (and the streamer's maxFileSize/maxBodySize):
+      # an oversized text field aborts parsing with a size-limit error so the
+      # caller can reply 413, rather than silently discarding the field.
+      raise newException(MultipartSizeLimitError,
+        "Text field '" & ms.mp.boundaries[bIdx].fieldName &
+        "' exceeds max field size of " & $ms.mp.sizeLimit.maxFieldSize & " bytes")
     add ms.mp.boundaries[bIdx].value, c
 
 proc flushPendingAsData(ms: var MultipartStreamer) =
