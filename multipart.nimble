@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.4"
+version       = "0.1.5"
 author        = "George Lemon"
 description   = "A simple multipart parser"
 license       = "MIT"
@@ -9,4 +9,4 @@ srcDir        = "src"
 # Dependencies
 
 requires "nim >= 2.0.0"
-requires "checksums"
+requires "checksums >= 0.2.2"
