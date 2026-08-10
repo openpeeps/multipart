@@ -249,6 +249,15 @@ suite "Multipart edge cases":
     var mp = initMultipart(contentType, tmpDir = "/tmp/custom_test_dir")
     check mp.getTempDir == "/tmp/custom_test_dir"
 
+  test "initMultipart applies the configured sizeLimit":
+    # The sizeLimit passed to initMultipart used to be ignored — an oversized
+    # text field parsed fine instead of raising MultipartSizeLimitError.
+    let body = buildBody(textPart("field", repeat('A', 100)))
+    var mp = initMultipart(contentType,
+      sizeLimit = MultipartSizeLimit(maxFieldSize: 10))
+    expect MultipartSizeLimitError:
+      mp.parse(body)
+
 
 suite "Multipart Parsing":
 

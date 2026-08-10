@@ -23,118 +23,73 @@
 
 ## Examples
 
-### 1. Basic parsing
+Three runnable, self-contained examples live in [`examples/`](examples/). Run any
+of them with `nim c -r examples/<file>.nim`. They cover the two parser styles —
+**batch** (`Multipart.parse` / `parseAsync`) for bodies that are already in memory,
+and **streaming** (`MultipartStreamer.feed`) for bodies that arrive incrementally
+over the network.
+
+### 1. Synchronous batch parser — [`examples/batch_parse.nim`](examples/batch_parse.nim)
+The batch parser consumes a **complete in-memory body** in one call. Use it when
+the whole body is already available — a microframework or event library that
+buffered the request, a stored/loaded blob, or tests.
+
+Covers: parsing from a `string`, a `seq[byte]`, or a zero-copy raw pointer;
+iterating text fields and file parts; file spooling to a custom temp dir;
+progress callbacks; magic-number signature validation; size limits; cleanup.
+
 ```nim
-import multipart
+var mp = initMultipart(contentType,
+  tmpDir = getTempDir() / "uploads",
+  sizeLimit = MultipartSizeLimit(maxFileSize: 10 * 1024 * 1024))
 
-let contentType = "multipart/form-data; boundary=----WebKitFormBoundaryABC123"
-
-# Raw multipart/form-data body as a string or seq[byte]
-let body = "...multipart body..." & readFile("photo.png")
-
-var mp = initMultipart(contentType, tmpDir = getTempDir() / "uploads")
-mp.parse(body)
-
+mp.parse(body)                    # body is fully in memory
 for b in mp:
   case b.dataType
-  of MultipartText:
-    echo "Text field: ", b.fieldName, " = ", b.value
-  of MultipartFile:
-    echo "File: ", b.fieldName, " -> ", b.fileName, " (", b.fileType, ")"
-    if fileExists(b.getPath):
-      echo "Stored at: ", b.getPath
-
-mp.cleanup()  # remove temporary files written during parsing
+  of MultipartText: echo b.fieldName, " = ", b.value
+  of MultipartFile: echo b.fieldName, " -> ", b.getPath   # spooled to disk
+mp.cleanup()                      # remove the temp files
 ```
 
-### 2. Progress tracking
-```nim
-var mp = initMultipart(contentType,
-  progressCallback = proc(evt: MultipartProgress) =
-    case evt.kind
-    of progressBodyStart:
-      echo "Parsing started. Total bytes: ", evt.totalBytes
-    of progressFileStart:
-      echo "File upload started: ", evt.fileName
-    of progressFileChunk:
-      echo "Wrote ", evt.bytesWritten, " bytes so far"
-    of progressFileDone:
-      echo "File upload completed: ", evt.fileName
-    of progressBodyDone:
-      echo "Parsing completed. Total bytes: ", evt.totalBytes
-)
+### 2. Asynchronous batch parser — [`examples/batch_parse_async.nim`](examples/batch_parse_async.nim)
+Same engine, but non-blocking: `MultipartRef` + `parseAsync` pushes progress to an
+async callback (WebSocket / SSE) without blocking the event loop.
 
-mp.progressChunkInterval = 64 * 1024  # fire a chunk event every 64KB, not every byte
-mp.parse(body)
+```nim
+import multipart, asyncdispatch
+
+var mp = initMultipartRef(contentType)
+mp.asyncProgressCallback = proc(evt: MultipartProgress): Future[void] {.async.} =
+  await ws.send($evt)             # stream progress to a WebSocket / SSE client
+await mp.parseAsync(body)
 ```
 
-### 3. Magic-number (signature) validation
+### 3. Streaming parser — [`examples/stream_parser.nim`](examples/stream_parser.nim)
+`MultipartStreamer.feed` consumes the body **incrementally** — feed it the chunks
+that arrive from the network and it tracks boundary matches across feed
+boundaries. The whole body never lives in memory. Use it for large uploads on
+your own event loop.
+
+Covers: feeding in network-sized chunks, byte-by-byte feeding, boundaries split
+across feeds, progress events, size limits, and the closure-friendly
+`MultipartStreamerRef`.
+
 ```nim
-var mp = initMultipart(contentType, tmpDir = getTempDir() / "uploads")
-
-# Accept only PNG files by validating their magic bytes
-mp.fileSignatureCallback = proc(boundary: ptr Boundary, pos: int, c: ptr char): MultipartFileSigantureState =
-  const pngSig = @[0x89'u8, 0x50'u8, 0x4E'u8, 0x47'u8, 0x0D'u8, 0x0A'u8, 0x1A'u8, 0x0A'u8]
-  let b = byte(ord(c[]))
-  if pos < pngSig.len and b == pngSig[pos]:
-    if pos + 1 == pngSig.len: stateValidMagic
-    else:                     stateMoreMagic
-  else:
-    stateInvalidMagic
-
-mp.parse(body)
-
-# Rejected files are moved to invalidBoundaries
-for b in mp.invalidBoundaries:
-  echo "Rejected: ", b.fileName
-
-mp.cleanupInvalid()  # remove only the rejected temporary files
-```
-
-### 4. Size limits
-```nim
-var mp = initMultipart(contentType,
-  sizeLimit = MultipartSizeLimit(
-    maxFileSize: 10 * 1024 * 1024,  # 10 MB per file
-    maxBodySize: 50 * 1024 * 1024,  # 50 MB total body
-    maxFieldSize: 64 * 1024         # 64 KB per text field
-  )
-)
-
-try:
-  mp.parse(body)
-except MultipartSizeLimitError as e:
-  echo "Rejected: ", e.msg
-```
-
-### 5. Streaming parser
-```nim
-# Feed body chunks as they arrive from the network — no need to buffer the whole body
-var ms = newMultipartStreamer(contentType, tmpDir = getTempDir() / "uploads",
-                              bodySize = contentLength)
-
-ms.feed(chunk1)
+var ms = newMultipartStreamer(contentType, bodySize = contentLength)
+ms.feed(chunk1)                   # feed chunks as they arrive
 ms.feed(chunk2)
-# ... feed more chunks as they arrive
-
 if ms.isComplete():
   for b in ms.boundaries():
     echo b.fieldName, " -> ", b.fileName
   ms.cleanup()
 ```
 
-### 6. Async parsing
-```nim
-import multipart, asyncdispatch
+### When to use which
+- **Batch (`parse` / `parseAsync`)** — the body is already in memory: small
+  uploads, buffered frameworks, stored blobs. Simple, one call.
+- **Streaming (`feed`)** — the body arrives incrementally over the network: large
+  uploads. Only the headers plus a 64KB write buffer are held in memory.
 
-proc handleUpload() {.async.} =
-  var mp = initMultipartRef(contentType)
-
-  mp.asyncProgressCallback = proc(evt: MultipartProgress): Future[void] {.async.} =
-    await ws.send($evt)  # stream progress to a WebSocket / SSE client
-
-  await mp.parseAsync(body)
-```
 
 If you're looking for a full featured input validator you can use `openpeeps/bag` package to validate input data, forms, including `multipart/form-data`. Give a try https://github.com/openpeeps/bag
 

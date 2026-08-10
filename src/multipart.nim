@@ -563,6 +563,7 @@ proc initMultipart*(contentType: string,
   result.boundaryLine = contentType
   result.fileCallback = fileCallback
   result.progressCallback = progressCallback
+  result.sizeLimit = sizeLimit
   result.fileWriteThreshold = 65536
 
 proc initMultipartRef*(contentType: string,
